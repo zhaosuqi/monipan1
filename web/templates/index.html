@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - MoniPan监控系统{% endblock %}
+
+{% block content %}
+<div class="text-center mt-5">
+    <div class="mb-4">
+        <i class="bi bi-graph-up-arrow" style="font-size: 4rem; color: #0d6efd;"></i>
+    </div>
+    <h1 class="mb-3">欢迎使用 MoniPan 监控系统</h1>
+    <p class="lead text-muted">加密货币量化交易监控平台</p>
+
+    <div class="row mt-5">
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-gear-fill display-4 text-primary mb-3"></i>
+                    <h4 class="card-title">配置管理</h4>
+                    <p class="card-text">切换运行模式、配置Binance连接参数</p>
+                    <a href="/config" class="btn btn-primary">
+                        <i class="bi bi-arrow-right"></i> 进入配置
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-activity display-4 text-success mb-3"></i>
+                    <h4 class="card-title">运行监控</h4>
+                    <p class="card-text">查看K线图表、订单监控和运行状态</p>
+                    <a href="/monitor" class="btn btn-success">
+                        <i class="bi bi-arrow-right"></i> 进入监控
+                    </a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <i class="bi bi-sliders display-4 text-info mb-3"></i>
+                    <h4 class="card-title">参数维护</h4>
+                    <p class="card-text">查看和修改交易参数、支持JSON导入导出</p>
+                    <a href="/parameters" class="btn btn-info">
+                        <i class="bi bi-arrow-right"></i> 进入参数
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> 系统信息</h5>
+            </div>
+            <div class="card-body text-start">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>当前模式:</strong>
+                            <span class="badge bg-{{ 'success' if not config.DB_SIM_MODE and not config.REPLAY_MODE else 'warning' }}">
+                                {{ '实盘模式' if not config.DB_SIM_MODE and not config.REPLAY_MODE else '回测模式' }}
+                            </span>
+                        </p>
+                        <p><strong>交易对:</strong> {{ config.SYMBOL }}</p>
+                        <p><strong>测试网络:</strong>
+                            {{ '是' if config.BINANCE_TESTNET else '否' }}
+                        </p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>数据库路径:</strong> {{ config.HIST_DB_PATH }}</p>
+                        <p><strong>历史表名:</strong> {{ config.HIST_TABLE }}</p>
+                        <p><strong>预热天数:</strong> {{ config.REPLAY_WARM_DAYS }} 天</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+# 交易所接口层依赖
+
+# 币安API（现有）
+binance-connector>=3.5.0
+
+# Flask用于本地虚拟币安API服务器（新增）
+flask>=3.0.0
+
+# 其他依赖（项目已有）
+# pandas
+# sqlite3 (Python标准库)

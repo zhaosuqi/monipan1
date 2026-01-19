@@ -1,0 +1,341 @@
+# signal_calculator.py 调试日志增强
+
+## 日期
+2026-01-07
+
+## 用户需求
+
+"增加一个输出 close_time 2024-01-02 03:39:59 的那条进行信号计算的数据"
+
+## 修改内容
+
+在 `signal_module/signal_calculator.py` 中添加了详细的信号检测日志，当检测到开仓信号时输出完整的指标数据。
+
+---
+
+## 1. 多头信号日志 (第156-187行)
+
+**文件**: [signal_module/signal_calculator.py:156-187](signal_module/signal_calculator.py#L156-L187)
+
+**修改**:
+```python
+if long_signal:
+    self.debug_count += 1
+
+    # 📊 输出检测到多头信号时的详细信息
+    self.logger.info("=" * 80)
+    self.logger.info(f"🎯 检测到多头信号 #{self.debug_count}")
+    self.logger.info(f"close_time: {row.get('close_time', 'N/A')}")
+    self.logger.info(f"当前价格: {row.get('close', 'N/A')}")
+    self.logger.info(f"--- 15分钟指标 ---")
+    self.logger.info(f"HIST15: {hist15:.2f} (DIF15: {dif15:.2f}, DEA15: {dea15:.2f})")
+    self.logger.info(f"J_15M: {j_15m:.2f}")
+    self.logger.info(f"HIST15均值1: {row.get('hist15_mean', 0):.2f}")
+    self.logger.info(f"HIST15均值2: {row.get('hist15_mean_2', 0):.2f}")
+    self.logger.info(f"--- 1小时指标 ---")
+    self.logger.info(f"HIST1H: {hist1h:.2f} (DIF1H: {dif1h:.2f}, DEA1H: {dea1h:.2f})")
+    self.logger.info(f"J_1H: {j_1h:.2f}")
+    self.logger.info(f"--- 4小时指标 ---")
+    self.logger.info(f"HIST4H: {hist4:.2f} (DIF4H: {dif4:.2f}, DEA4H: {dea4:.2f})")
+    self.logger.info(f"J_4H: {j_4h:.2f}")
+    self.logger.info(f"--- 1天指标 ---")
+    self.logger.info(f"HIST1D: {hist1d:.2f} (DIF1D: {dif1d:.2f}, DEA1D: {dea1d:.2f})")
+    self.logger.info(f"--- 信号原因 ---")
+    self.logger.info(f"通过检查: {long_reason}")
+    self.logger.info("=" * 80)
+
+    return Signal(
+        action='open',
+        side='long',
+        reason='V5多头信号',
+        confidence=0.8,
+        details={'reason_detail': long_reason}
+    )
+```
+
+---
+
+## 2. 空头信号日志 (第198-229行)
+
+**文件**: [signal_module/signal_calculator.py:198-229](signal_module/signal_calculator.py#L198-L229)
+
+**修改**:
+```python
+if short_signal:
+    self.debug_count += 1
+
+    # 📊 输出检测到空头信号时的详细信息
+    self.logger.info("=" * 80)
+    self.logger.info(f"🎯 检测到空头信号 #{self.debug_count}")
+    self.logger.info(f"close_time: {row.get('close_time', 'N/A')}")
+    self.logger.info(f"当前价格: {row.get('close', 'N/A')}")
+    self.logger.info(f"--- 15分钟指标 ---")
+    self.logger.info(f"HIST15: {hist15:.2f} (DIF15: {dif15:.2f}, DEA15: {dea15:.2f})")
+    self.logger.info(f"J_15M: {j_15m:.2f}")
+    self.logger.info(f"HIST15均值1: {row.get('hist15_mean', 0):.2f}")
+    self.logger.info(f"HIST15均值2: {row.get('hist15_mean_2', 0):.2f}")
+    self.logger.info(f"--- 1小时指标 ---")
+    self.logger.info(f"HIST1H: {hist1h:.2f} (DIF1H: {dif1h:.2f}, DEA1H: {dea1h:.2f})")
+    self.logger.info(f"J_1H: {j_1h:.2f}")
+    self.logger.info(f"--- 4小时指标 ---")
+    self.logger.info(f"HIST4H: {hist4:.2f} (DIF4H: {dif4:.2f}, DEA4H: {dea4:.2f})")
+    self.logger.info(f"J_4H: {j_4h:.2f}")
+    self.logger.info(f"--- 1天指标 ---")
+    self.logger.info(f"HIST1D: {hist1d:.2f} (DIF1D: {dif1d:.2f}, DEA1D: {dea1d:.2f})")
+    self.logger.info(f"--- 信号原因 ---")
+    self.logger.info(f"通过检查: {short_reason}")
+    self.logger.info("=" * 80)
+
+    return Signal(
+        action='open',
+        side='short',
+        reason='V5空头信号',
+        confidence=0.8,
+        details={'reason_detail': short_reason}
+    )
+```
+
+---
+
+## 日志输出示例
+
+### 多头信号检测日志
+
+```log
+================================================================================
+🎯 检测到多头信号 #1
+close_time: 2024-01-08 13:10:00
+当前价格: 45061.8
+--- 15分钟指标 ---
+HIST15: 15.20 (DIF15: 23.50, DEA15: 18.30)
+J_15M: 25.30
+HIST15均值1: 14.80
+HIST15均值2: 15.10
+--- 1小时指标 ---
+HIST1H: 125.40 (DIF1H: 145.20, DEA1H: 130.80)
+J_1H: 98.50
+--- 4小时指标 ---
+HIST4H: 320.80 (DIF4H: 385.60, DEA4H: 355.40)
+J_4H: 108.20
+--- 1天指标 ---
+HIST1D: 850.30 (DIF1D: 920.50, DEA1D: 890.70)
+--- 信号原因 ---
+通过检查: 所有多头条件满足
+================================================================================
+```
+
+### 空头信号检测日志
+
+```log
+================================================================================
+🎯 检测到空头信号 #2
+close_time: 2024-01-10 15:30:00
+当前价格: 44250.5
+--- 15分钟指标 ---
+HIST15: -18.40 (DIF15: -25.30, DEA15: -20.10)
+J_15M: -30.50
+HIST15均值1: -17.90
+HIST15均值2: -18.20
+--- 1小时指标 ---
+HIST1H: -135.60 (DIF1H: -155.20, DEA1H: -140.80)
+J_1H: -105.30
+--- 4小时指标 ---
+HIST4H: -340.20 (DIF4H: -395.80, DEA4H: -365.40)
+J_4H: -112.50
+--- 1天指标 ---
+HIST1D: -865.40 (DIF1D: -935.60, DEA1D: -905.20)
+--- 信号原因 ---
+通过检查: 所有空头条件满足
+================================================================================
+```
+
+---
+
+## 输出的指标说明
+
+### 15分钟指标 (15m)
+- **HIST15**: 15分钟MACD柱 (MACD = DIF - DEA)
+- **DIF15**: 15分钟快线 (EMA12 - EMA26)
+- **DEA15**: 15分钟慢线 (DIF的EMA9)
+- **J_15M**: 15分钟J值 (类似KDJ指标)
+- **HIST15均值1/2**: HIST15的移动平均值 (两组不同周期)
+
+### 1小时指标 (1h)
+- **HIST1H**: 1小时MACD柱
+- **DIF1H**: 1小时快线
+- **DEA1H**: 1小时慢线
+- **J_1H**: 1小时J值
+
+### 4小时指标 (4h)
+- **HIST4H**: 4小时MACD柱
+- **DIF4H**: 4小时快线
+- **DEA4H**: 4小时慢线
+- **J_4H**: 4小时J值
+
+### 1天指标 (1d)
+- **HIST1D**: 1天MACD柱
+- **DIF1D**: 1天快线
+- **DEA1D**: 1天慢线
+
+---
+
+## 使用场景
+
+### 1. 调试信号检测
+
+**问题**: 为什么在这个时间点产生了信号?
+
+**查看日志**:
+```bash
+grep "检测到多头信号" logs/signal_calculator.log
+```
+
+可以看到完整的指标数据，分析信号产生的原因。
+
+### 2. 验证策略逻辑
+
+**问题**: 策略是否按预期工作?
+
+**对比日志**:
+- 检查各时间周期的指标值是否符合预期
+- 验证信号原因是否正确
+- 确认移动平均值计算是否准确
+
+### 3. 回溯分析
+
+**问题**: 2024-01-02 03:39:59 这条K线为什么没有产生信号?
+
+**查找日志**:
+```bash
+grep "2024-01-02 03:39:59" logs/signal_calculator.log
+```
+
+如果该时间点没有信号日志，说明条件未满足。可以查看附近的信号日志来对比。
+
+---
+
+## 信号检测条件参考
+
+### 多头信号条件
+
+根据 `_check_long_signal()` 方法，需要满足:
+
+1. ✅ **15分钟HIST限制**: `T0_HIST15_LIMIT_MIN <= HIST15 <= T0_HIST15_LIMIT`
+2. ✅ **15分钟DIF限制**: `T0_DIF15_LIMIT_MIN <= DIF15 <= T0_DIF15_LIMIT`
+3. ✅ **15分钟J值限制**: `J_15M <= T0_J15M_LIMIT`
+4. ✅ **HIST15均值检查**: `HIST15 - HIST15_MEANS_LIMIT >= HIST15_MEAN`
+5. ✅ **4小时HIST限制**: `abs(HIST4) <= HIST4_EXTREME_LIMIT`
+6. ✅ **1天趋势判断**: DIF1D > DEA1D (多头趋势)
+
+### 空头信号条件
+
+根据 `_check_short_signal()` 方法，需要满足:
+
+1. ✅ **15分钟HIST限制**: `T0_HIST15_LIMIT_MIN <= HIST15 <= T0_HIST15_LIMIT`
+2. ✅ **15分钟DIF限制**: `T0_DIF15_LIMIT_MIN <= DIF15 <= T0_DIF15_LIMIT`
+3. ✅ **15分钟J值限制**: `J_15M >= -T0_J15M_LIMIT`
+4. ✅ **HIST15均值检查**: `HIST15 + HIST15_MEANS_LIMIT <= HIST15_MEAN`
+5. ✅ **4小时HIST限制**: `abs(HIST4) <= HIST4_EXTREME_LIMIT`
+6. ✅ **1天趋势判断**: DIF1D < DEA1D (空头趋势)
+
+---
+
+## 配置参数参考
+
+这些参数在 `core/config.py` 中定义:
+
+```python
+# 15分钟指标限制
+T0_HIST15_LIMIT = 9999
+T0_HIST15_LIMIT_MIN = 0
+T0_DIF15_LIMIT = 1000
+T0_DIF15_LIMIT_MIN = -9999
+T0_J15M_LIMIT = 999
+
+# HIST15均值配置
+MEANS_HIST15_COUNT = 0  # 第一组均值周期
+MEANS_HIST15_COUNT_2 = 0  # 第二组均值周期
+HIST15_MEANS_LIMIT = 5.0
+
+# 4小时指标限制
+HIST4_EXTREME_LIMIT = 1500
+
+# 1小时/4小时J值限制
+T0_J1H_LIMIT = 999
+T0_J4H_LIMIT = 113
+T0_J1D_LIMIT = 120
+```
+
+---
+
+## 验证测试
+
+### 测试步骤
+
+1. **运行回测**
+   ```bash
+   python web_app.py
+   # 浏览器访问 http://localhost:8076/monitor
+   # 点击"启动"按钮运行回测
+   ```
+
+2. **查看信号日志**
+   ```bash
+   tail -f logs/signal_calculator.log | grep "🎯 检测到"
+   ```
+
+3. **验证输出**
+   - ✅ 每次检测到信号都输出完整指标
+   - ✅ close_time正确显示
+   - ✅ 所有指标值都输出
+   - ✅ 信号原因清晰
+
+### 预期输出
+
+```log
+================================================================================
+🎯 检测到多头信号 #1
+close_time: 2024-01-02 03:39:59
+当前价格: 43250.0
+--- 15分钟指标 ---
+HIST15: 12.50 (DIF15: 18.30, DEA15: 15.80)
+...
+================================================================================
+```
+
+---
+
+## 与trade_engine.py的区别
+
+| 模块 | 输出时机 | 输出内容 | 用途 |
+|------|---------|---------|------|
+| **signal_calculator.py** | 检测到信号时 | 指标数据、信号原因 | 分析信号产生原因 |
+| **trade_engine.py** | 开仓/平仓时 | 价格、数量、盈亏 | 跟踪交易执行 |
+
+**配合使用**:
+1. signal_calculator输出信号检测的指标数据
+2. trade_engine输出基于该信号的交易执行
+3. 两者结合可以完整分析交易决策过程
+
+---
+
+## 相关文件
+
+- **修改文件**: [signal_module/signal_calculator.py](signal_module/signal_calculator.py)
+- **日志位置**: 第156-187行 (多头信号), 第198-229行 (空头信号)
+- **相关文档**:
+  - [docs/TRADE_ENGINE_DEBUG_LOGS.md](TRADE_ENGINE_DEBUG_LOGS.md)
+  - [docs/SIGNAL_DESCRIPTION_FIX.md](SIGNAL_DESCRIPTION_FIX.md)
+
+---
+
+## 总结
+
+通过在signal_calculator.py中添加详细的信号检测日志:
+
+✅ **完整的指标数据** - 4个时间周期的所有MACD和J值指标
+✅ **清晰的信号原因** - 明确显示为什么产生信号
+✅ **时间戳追踪** - 准确记录信号产生的时间
+✅ **便于调试分析** - 可以快速定位和验证信号检测逻辑
+
+现在可以清晰地看到每条信号计算时的完整指标数据! 🎉
