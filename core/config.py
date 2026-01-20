@@ -272,6 +272,10 @@ class Config:
         self.CLOSE_TIME_MINUTES = float(os.getenv('CLOSE_TIME_MINUTES', '9999'))
         self.CLOSE_DECAY_POINTS = float(os.getenv('CLOSE_DECAY_POINTS', '9999'))
 
+        # 订单巡检与反向同步
+        self.ORDER_SYNC_INTERVAL = int(os.getenv('ORDER_SYNC_INTERVAL', '120'))
+        self.ORDER_SYNC_LOG_LIMIT = int(os.getenv('ORDER_SYNC_LOG_LIMIT', '5'))
+
         # 飞书机器人
         self.FEISHU_WEBHOOK = os.getenv('FEISHU_WEBHOOK', '')
         self.FEISHU_ENABLED = os.getenv('FEISHU_ENABLED', '0').lower() in ('1', 'true', 'yes')

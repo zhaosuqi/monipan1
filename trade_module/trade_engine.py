@@ -24,7 +24,7 @@ from core.logger import get_logger
 # 新增: 导入Exchange接口
 from exchange_layer import ExchangeType, create_exchange
 from trade_module.account_tracker import AccountTracker
-from trade_module.local_order import LocalOrderManager
+from trade_module.local_order import Order as LocalOrder, LocalOrderManager
 
 
 @dataclass
@@ -80,14 +80,15 @@ class Trade:
 class TradeEngine:
     """交易引擎 - 处理开仓、平仓、止盈、止损等核心逻辑"""
 
-    def __init__(self):
+    def __init__(self, exchange=None):
         self.logger = get_logger('trade_module.engine')
         self.order_manager = LocalOrderManager()
         self.account_tracker = AccountTracker()
 
-        # 新增: 创建Exchange实例
-        self.exchange = create_exchange()
-        self.exchange.connect()
+        # 新增: 创建Exchange实例，支持外部注入
+        self.exchange = exchange or create_exchange()
+        if not getattr(self.exchange, 'connected', False):
+            self.exchange.connect()
 
         # 持仓和交易记录
         self.positions: List[Position] = []
@@ -114,6 +115,11 @@ class TradeEngine:
         self.stoploss_time = None  # 最后止损时间
         self.stoploss_side = None  # 最后止损方向
 
+        # 远端订单巡检
+        self.order_sync_interval = getattr(config, 'ORDER_SYNC_INTERVAL', 120)
+        self.order_sync_log_limit = getattr(config, 'ORDER_SYNC_LOG_LIMIT', 5)
+        self.last_order_sync: Optional[pd.Timestamp] = None
+
         self.logger.info("=" * 60)
         self.logger.info("交易引擎初始化完成")
         self.logger.info(f"初始资金: {self.initial_capital} BTC")
@@ -138,6 +144,143 @@ class TradeEngine:
             f"盈亏={pnl_val:.6f} BTC | "
             f"{details_val}"
         )
+
+    # ------------------ 外部触发开仓 ------------------
+    def trigger_external_open(self, ts, price: float, side: str, reason: str = 'external_trigger') -> bool:
+        """外部触发开仓，复用开仓流程"""
+        row = {
+            'close': price,
+            'high': price,
+            'low': price,
+            'close_time': ts
+        }
+        # 伪造信号对象以复用日志信息
+        class _Signal:
+            def __init__(self, side, reason):
+                self.action = 'open'
+                self.side = side
+                self.reason = reason
+        signal = _Signal(side, reason)
+        return self.open_position(ts, price, row, side, reason)
+
+    # ------------------ 远端订单巡检与反向同步 ------------------
+    def _maybe_sync_remote_orders(self, ts: pd.Timestamp, price: float):
+        """定期从交易所拉取订单与持仓，补充本地状态"""
+        if self.order_sync_interval <= 0:
+            return
+
+        if self.last_order_sync is not None:
+            delta_sec = (ts - self.last_order_sync).total_seconds()
+            if delta_sec < self.order_sync_interval:
+                return
+
+        try:
+            open_orders = []
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+            except Exception as fetch_err:
+                self.logger.warning(f"订单巡检失败(get_open_orders): {fetch_err}")
+
+            # 打印部分挂单便于观察
+            if open_orders:
+                self.logger.info("🔍 挂单巡检 | 总数=%s", len(open_orders))
+                for idx, od in enumerate(open_orders[: self.order_sync_log_limit]):
+                    self.logger.info(
+                        "  #%s id=%s side=%s type=%s status=%s price=%.4f qty=%.4f filled=%.4f",
+                        idx + 1,
+                        getattr(od, 'order_id', ''),
+                        getattr(getattr(od, 'side', None), 'value', getattr(od, 'side', '')),
+                        getattr(getattr(od, 'type', None), 'value', getattr(od, 'type', '')),
+                        getattr(getattr(od, 'status', None), 'value', getattr(od, 'status', '')),
+                        getattr(od, 'price', 0.0) or 0.0,
+                        getattr(od, 'quantity', 0.0) or 0.0,
+                        getattr(od, 'filled_quantity', 0.0) or 0.0,
+                    )
+
+            # 反向同步持仓/订单
+            self._backfill_position_from_exchange(ts, price)
+
+        except Exception as e:  # 防御性日志，避免中断主流程
+            self.logger.warning(f"订单巡检异常: {e}", exc_info=True)
+        finally:
+            self.last_order_sync = ts
+
+    def _backfill_position_from_exchange(self, ts: pd.Timestamp, price: float):
+        """如果交易所存在持仓而本地没有，则补建本地持仓，进入TP/SL逻辑"""
+        try:
+            pos_info = self.exchange.get_position(config.SYMBOL)
+        except Exception as fetch_err:
+            self.logger.warning(f"获取远端持仓失败: {fetch_err}")
+            return
+
+        if not pos_info:
+            return
+
+        remote_amt = float(pos_info.get('position_amount', 0))
+        if remote_amt == 0:
+            return
+
+        side = 'long' if remote_amt > 0 else 'short'
+        existing = any(p.side == side and p.contracts > 0 for p in self.positions)
+        if existing:
+            return
+
+        entry_price = float(pos_info.get('entry_price', 0)) or price
+        contracts = abs(int(remote_amt))
+        if contracts <= 0 or entry_price <= 0:
+            self.logger.warning("远端持仓数据异常，跳过反向同步")
+            return
+
+        cn = config.CONTRACT_NOTIONAL
+        qty_per_contract = cn / entry_price
+        trace_id = str(uuid.uuid4())
+
+        pos = Position(
+            id=str(uuid.uuid4()),
+            side=side,
+            entry_price=entry_price,
+            entry_time=ts,
+            contracts=contracts,
+            entry_contracts=contracts,
+            contract_size_btc=qty_per_contract,
+            tp_hit=[],
+            tp_activated=False,
+            tp_hit_value=0.0,
+            trace_id=trace_id,
+            benchmark_price=entry_price,
+            entry_hist4=None,
+            entry_dif4=None,
+            entry_hist1h=None,
+            entry_hist15=None,
+        )
+
+        self.positions.append(pos)
+
+        self.logger.warning(
+            f"⚠️ 发现远端持仓但本地缺失，已补建 | 方向={side} | 数量={contracts}张 | 入场价={entry_price:.2f}"
+        )
+
+        # 补建本地订单记录便于数据库一致性
+        try:
+            local_order = LocalOrder(
+                order_id=str(uuid.uuid4()),
+                trace_id=trace_id,
+                side=side,
+                order_type='OPEN',
+                price=entry_price,
+                contracts=contracts,
+                status='FILLED',
+                filled_contracts=contracts,
+                avg_fill_price=entry_price,
+                filled_time=ts.isoformat()
+            )
+            self.order_manager.create_order(local_order)
+        except Exception as create_err:
+            self.logger.warning(f"补建本地订单记录失败: {create_err}")
+
+        # 挂止盈单以继续后续TP/SL管理
+        if config.TP_LEVELS:
+            self._place_initial_tp_order(pos, ts)
 
     def open_position(self, ts, price: float, row: Dict,
                       side: str, signal_name: str) -> bool:
@@ -1754,6 +1897,13 @@ class TradeEngine:
         ts_str = str(ts)
         debug_mode = '03:44' in ts_str or '19:39' in ts_str or '19:44' in ts_str
 
+        # 定期巡检远端订单与持仓，保证本地与交易所一致
+        current_price = row.get('price', row.get('close'))
+        try:
+            self._maybe_sync_remote_orders(ts, current_price)
+        except Exception as sync_err:
+            self.logger.warning(f"远端订单巡检失败: {sync_err}")
+
         if debug_mode:
             self.logger.info("=" * 80)
             self.logger.info(f"🔍 [process_tick] {ts_str}")
@@ -1764,7 +1914,7 @@ class TradeEngine:
                 self.logger.info(f"🔍 [process_tick] 信号原因: {signal.reason if hasattr(signal, 'reason') else 'N/A'}")
             self.logger.info(f"🔍 [process_tick] 当前持仓数={len(self.positions)}")
 
-        price = row.get('price', row.get('close'))
+        price = current_price
         high = row.get('high', price)
         low = row.get('low', price)
 
