@@ -186,7 +186,10 @@ class TradeEngine:
             return
 
         if self.last_order_sync is not None:
-            delta_sec = (ts - self.last_order_sync).total_seconds()
+            # 统一转为 tz-naive 避免 tz-aware 与 tz-naive 相减报错
+            ts_naive = ts.tz_localize(None) if ts.tzinfo is not None else ts
+            last_naive = self.last_order_sync.tz_localize(None) if self.last_order_sync.tzinfo is not None else self.last_order_sync
+            delta_sec = (ts_naive - last_naive).total_seconds()
             if delta_sec < self.order_sync_interval:
                 return
 
