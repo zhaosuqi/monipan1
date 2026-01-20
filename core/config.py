@@ -112,6 +112,7 @@ class Config:
         # 仓位配置
         self.POSITION_BTC = float(os.getenv('POSITION_BTC', '1.0'))
         self.CONTRACT_NOTIONAL = float(os.getenv('CONTRACT_NOTIONAL', '100'))
+        self.LEVERAGE = float(os.getenv('LEVERAGE', '3'))
 
         # V5 T0参数 - 15分钟
         self.T0_HIST15_LIMIT = float(os.getenv('T0_HIST15_LIMIT', '9999'))

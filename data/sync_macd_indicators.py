@@ -18,13 +18,18 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
 
-# 添加项目根目录到路径
+load_dotenv()
+
+# 添加项目根目录到路径（确保能找到 core 与 data_module 等包）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.config import config
 
 try:
     import db_compat
@@ -37,7 +42,12 @@ TRIGGER_SECONDS = [1, 3, 5, 13, 20, 23]
 
 def get_engine():
     """获取数据库引擎"""
-    db_uri = os.environ.get("DB_URI") or "sqlite:///data/klines.db"
+    db_uri = (config.DB_PATH or '').strip()
+
+    # 如果未配置协议，按本地sqlite文件处理
+    if '://' not in db_uri:
+        db_uri = f"sqlite:///{os.path.abspath(db_uri or 'data/klines.db')}"
+
     return create_engine(db_uri)
 
 

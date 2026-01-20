@@ -341,6 +341,8 @@ class TradeEngine:
             self.logger.info(f"🔍 [开仓尝试] {ts_str} | {side} | 价格={price:.2f} | 信号={signal_name}")
 
         # 计算可用资金（扣除已锁定部分）
+        leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
+
         if config.NO_LIMIT_POS:
             available_capital = 1.0
         else:
@@ -383,7 +385,7 @@ class TradeEngine:
 
         # 计算合约数量
         cn = config.CONTRACT_NOTIONAL
-        max_contracts = int((tradable_capital * price) / cn)
+        max_contracts = int((tradable_capital * price * leverage) / cn)
 
         if debug_mode:
             self.logger.info(f"📊 [合约计算] 价格={price:.2f} | 面值={cn} | 最大合约数={max_contracts}")
@@ -409,7 +411,7 @@ class TradeEngine:
         # 市价单使用吃单费率
         open_fee_rate = config.TAKER_FEE_RATE
 
-        required_margin_btc = (max_contracts * cn) / price
+        required_margin_btc = (max_contracts * cn) / (price * leverage)
         estimated_fee_btc = (max_contracts * cn * open_fee_rate) / price
         required_btc = required_margin_btc + estimated_fee_btc if not config.NO_LIMIT_POS else 0.0
 
@@ -520,7 +522,8 @@ class TradeEngine:
         # 解锁占用资金并扣除实际成本
         if not config.NO_LIMIT_POS:
             self.locked_capital = max(0.0, self.locked_capital - required_btc)
-            self.realized_pnl -= (max_contracts * cn / actual_price) + open_fee_btc
+            # 占用保证金按杠杆缩放
+            self.realized_pnl -= (max_contracts * cn / (actual_price * leverage)) + open_fee_btc
         else:
             self.realized_pnl = 0
 
@@ -680,12 +683,13 @@ class TradeEngine:
         if not config.NO_LIMIT_POS:
             cn = config.CONTRACT_NOTIONAL
             entry_price = pos.entry_price
+            leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
             if config.OPEN_TAKER_OR_MAKER == "MAKER":
                 open_fee_rate = config.MAKER_FEE_RATE
             else:
                 open_fee_rate = config.TAKER_FEE_RATE
 
-            required_margin_btc = (pos.contracts * cn) / entry_price if entry_price > 0 else 0
+            required_margin_btc = (pos.contracts * cn) / (entry_price * leverage) if entry_price > 0 else 0
             estimated_fee_btc = (pos.contracts * cn * open_fee_rate) / entry_price if entry_price > 0 else 0
             locked_btc = required_margin_btc + estimated_fee_btc
 
@@ -1367,12 +1371,13 @@ class TradeEngine:
             # 释放部分锁定资金
             if not config.NO_LIMIT_POS:
                 entry_price = pos.entry_price
+                leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
                 if config.OPEN_TAKER_OR_MAKER == "MAKER":
                     open_fee_rate = config.MAKER_FEE_RATE
                 else:
                     open_fee_rate = config.TAKER_FEE_RATE
 
-                released_margin_btc = (sum_qty * cn) / entry_price if entry_price > 0 else 0
+                released_margin_btc = (sum_qty * cn) / (entry_price * leverage) if entry_price > 0 else 0
                 released_fee_btc = (sum_qty * cn * open_fee_rate) / entry_price if entry_price > 0 else 0
                 released_btc = released_margin_btc + released_fee_btc
 
