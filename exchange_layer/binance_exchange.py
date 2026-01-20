@@ -30,6 +30,7 @@ class BinanceExchange(BaseExchange):
         super().__init__(api_key, api_secret, testnet)
         self.logger = get_logger('exchange_layer.binance')
         self.client: Optional[CMFutures] = None
+        self.hedge_mode = False  # 是否为双向持仓模式
         
         # 本地订单管理器
         self.local_order_manager = LocalOrderManager()
@@ -55,6 +56,19 @@ class BinanceExchange(BaseExchange):
 
             # 测试连接
             self.client.exchange_info()
+            
+            # 获取持仓模式
+            try:
+                # 检查是否开启双向持仓
+                # get_position_mode返回 {'dualSidePosition': True/False}
+                pos_mode = self.client.get_position_mode()
+                self.hedge_mode = pos_mode.get('dualSidePosition', False)
+                mode_str = "双向持仓(Hedge Mode)" if self.hedge_mode else "单向持仓(One-Way Mode)"
+                self.logger.info(f"持仓模式: {mode_str}")
+            except Exception as e:
+                self.logger.warning(f"获取持仓模式失败，默认使用单向持仓: {e}")
+                self.hedge_mode = False
+
             self.connected = True
             self.logger.info("✓ 币安交易所连接成功")
             return True
@@ -186,6 +200,31 @@ class BinanceExchange(BaseExchange):
                 params['stopPrice'] = stop_price
             if client_order_id:
                 params['newClientOrderId'] = client_order_id
+
+            # 处理双向持仓模式(Hedge Mode)的positionSide参数
+            if self.hedge_mode and 'positionSide' not in params and 'positionSide' not in kwargs:
+                # 只有当 params 中没有指定 positionSide 时才自动推断
+                is_reduce_only = params.get('reduceOnly', False) or kwargs.get('reduceOnly', False)
+                order_side = side.upper()
+                
+                if is_reduce_only:
+                    # 减仓/平仓单
+                    # BUY + ReduceOnly -> 平空 -> positionSide=SHORT
+                    # SELL + ReduceOnly -> 平多 -> positionSide=LONG
+                    if order_side == 'BUY':
+                        params['positionSide'] = 'SHORT'
+                    else:
+                        params['positionSide'] = 'LONG'
+                else:
+                    # 开仓单 (或普通单)
+                    # BUY -> 开多 -> positionSide=LONG
+                    # SELL -> 开空 -> positionSide=SHORT
+                    if order_side == 'BUY':
+                        params['positionSide'] = 'LONG'
+                    else:
+                        params['positionSide'] = 'SHORT'
+                
+                self.logger.info(f"   [Hedge Mode] 自动补充 positionSide={params['positionSide']}")
 
             # 币安对限价/止损限价单必须提供 timeInForce
             limit_types = {

@@ -317,9 +317,9 @@ class TradeEngine:
         except Exception as create_err:
             self.logger.warning(f"补建本地订单记录失败: {create_err}")
 
-        # 挂止盈单以继续后续TP/SL管理
-        if config.TP_LEVELS:
-            self._place_initial_tp_order(pos, ts)
+        # 新策略：不预先挂止盈单，改为实时监测后再挂单
+        # if config.TP_LEVELS:
+        #     self._place_initial_tp_order(pos, ts)
 
     def open_position(self, ts, price: float, row: Dict,
                       side: str, signal_name: str) -> bool:
@@ -618,10 +618,11 @@ class TradeEngine:
         )
 
         # ============================================================
-        # 开仓成功后，按最高级别挂止盈单
+        # 开仓成功后，不再预先挂止盈单
+        # 改为实时监测价格，当触及止盈条件时再挂单
         # ============================================================
-        if config.TP_LEVELS:
-            self._place_initial_tp_order(pos, ts)
+        # if config.TP_LEVELS:
+        #     self._place_initial_tp_order(pos, ts)
 
         return True
 
@@ -813,7 +814,49 @@ class TradeEngine:
         self.logger.info("=" * 80)
 
         try:
-            # 挂限价止盈单
+            # 验证交易所实际持仓
+            exchange_pos = self.exchange.get_position(config.SYMBOL)
+            if not exchange_pos:
+                self.logger.warning(f"⚠️ [跳过止盈单] 交易所端无持仓，可能已被平仓")
+                return
+            
+            exchange_qty = abs(float(exchange_pos.get('position_amount', 0)))
+            if exchange_qty <= 0:
+                self.logger.warning(f"⚠️ [跳过止盈单] 交易所持仓数量为0")
+                return
+            
+            # 检查是否已有同方向的挂单（避免重复挂单导致 ReduceOnly 被拒）
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                if open_orders:
+                    # 检查是否有同方向的平仓挂单
+                    for existing_order in open_orders:
+                        if existing_order.side.value == close_side:
+                            existing_qty = existing_order.quantity
+                            self.logger.warning(
+                                f"⚠️ [跳过止盈单] 已有{close_side}方向挂单 "
+                                f"ID={existing_order.order_id} 数量={existing_qty}"
+                            )
+                            # 记录已有的止盈单ID
+                            pos.tp_order_id = existing_order.order_id
+                            pos.tp_order_contracts = int(existing_qty)
+                            return
+            except Exception as e:
+                self.logger.warning(f"⚠️ 检查挂单失败: {e}")
+            
+            # 确保止盈数量不超过实际持仓
+            actual_tp_contracts = min(tp_contracts, int(exchange_qty))
+            if actual_tp_contracts != tp_contracts:
+                self.logger.warning(
+                    f"⚠️ [调整止盈数量] 本地={tp_contracts}张 交易所={int(exchange_qty)}张 → 使用{actual_tp_contracts}张"
+                )
+                tp_contracts = actual_tp_contracts
+            
+            if tp_contracts <= 0:
+                self.logger.warning(f"⚠️ [跳过止盈单] 计算后数量为0")
+                return
+
+            # 挂限价止盈单（不使用 reduceOnly，因为单向持仓模式下可能与已有挂单冲突）
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
                 side=close_side,
@@ -875,10 +918,11 @@ class TradeEngine:
                     self.logger.error(f"❌ [撤销止盈单失败] {e}")
             return
 
-        # 情况2: 止盈单不存在，重新挂单
+        # 情况2: 止盈单不存在
+        # 新策略：不再预先挂止盈单，由 apply_take_profit 实时处理
         if not pos.tp_order_id:
-            self.logger.warning(f"⚠️ 止盈单不存在，重新挂单")
-            self._place_initial_tp_order(pos, ts)
+            # self.logger.warning(f"⚠️ 止盈单不存在，重新挂单")
+            # self._place_initial_tp_order(pos, ts)
             return
 
         # 情况3: 持仓数量变化，调整止盈单
@@ -891,6 +935,29 @@ class TradeEngine:
             try:
                 # 撤销旧止盈单
                 self.exchange.cancel_order(config.SYMBOL, pos.tp_order_id)
+
+                # 验证交易所实际持仓
+                exchange_pos = self.exchange.get_position(config.SYMBOL)
+                if not exchange_pos:
+                    self.logger.warning(f"⚠️ [跳过更新止盈单] 交易所端无持仓")
+                    pos.tp_order_id = None
+                    pos.tp_order_contracts = 0
+                    return
+                
+                exchange_qty = abs(float(exchange_pos.get('position_amount', 0)))
+                if exchange_qty <= 0:
+                    self.logger.warning(f"⚠️ [跳过更新止盈单] 交易所持仓数量为0")
+                    pos.tp_order_id = None
+                    pos.tp_order_contracts = 0
+                    return
+                
+                # 使用交易所实际持仓数量
+                actual_contracts = min(current_contracts, int(exchange_qty))
+                if actual_contracts <= 0:
+                    self.logger.warning(f"⚠️ [跳过更新止盈单] 计算后数量为0")
+                    pos.tp_order_id = None
+                    pos.tp_order_contracts = 0
+                    return
 
                 # 重新计算止盈价格和数量
                 tp_levels = list(config.TP_LEVELS)
@@ -915,7 +982,7 @@ class TradeEngine:
                     symbol=config.SYMBOL,
                     side=close_side,
                     order_type='LIMIT',
-                    quantity=float(current_contracts),
+                    quantity=float(actual_contracts),
                     price=tp_price,
                     business_order_type='TP',  # 业务类型：止盈
                     trace_id=pos.trace_id,  # 使用持仓的 trace_id
@@ -923,11 +990,11 @@ class TradeEngine:
                 )
 
                 pos.tp_order_id = order.order_id
-                pos.tp_order_contracts = current_contracts
+                pos.tp_order_contracts = actual_contracts
 
                 self.logger.info(
                     f"✓ 止盈单已更新 | ID={order.order_id} | "
-                    f"数量={current_contracts}张 | 价格={tp_price:.2f}"
+                    f"数量={actual_contracts}张 | 价格={tp_price:.2f}"
                 )
 
             except Exception as e:
@@ -958,10 +1025,10 @@ class TradeEngine:
                 return True
 
             elif order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
-                # 止盈单失效，重新挂单
-                self.logger.warning(f"⚠️ 止盈单{order.status.value}，重新挂单")
+                # 止盈单失效，由 apply_take_profit 重新处理
+                self.logger.warning(f"⚠️ 止盈单{order.status.value}")
                 pos.tp_order_id = None
-                self._place_initial_tp_order(pos, ts)
+                # self._place_initial_tp_order(pos, ts)
                 return False
 
             # NEW状态，继续等待
@@ -1181,6 +1248,17 @@ class TradeEngine:
         self.logger.info("=" * 80)
 
         try:
+            # 先撤销可能冲突的同方向挂单
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                if open_orders:
+                    for existing_order in open_orders:
+                        if existing_order.side.value == close_side:
+                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
+                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
+            
             # 使用收盘价挂限价单
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
@@ -1285,6 +1363,17 @@ class TradeEngine:
         )
 
         try:
+            # 先撤销可能冲突的同方向挂单
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                if open_orders:
+                    for existing_order in open_orders:
+                        if existing_order.side.value == close_side:
+                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
+                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
+            
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
                 side=close_side,
@@ -1312,12 +1401,17 @@ class TradeEngine:
         self, pos: Position, ts: pd.Timestamp, price: float, row: Dict
     ) -> bool:
         """
-        应用分级止盈
+        实时监测止盈条件并挂单
+
+        新逻辑（不预先挂止盈单）:
+        1. 实时监测分钟K线的最高/最低价
+        2. 当价格触及止盈条件时，标记止盈已激活
+        3. 触发止盈后，使用收盘价挂止盈回撤单
 
         Args:
             pos: 持仓对象
             ts: 当前时间
-            price: 当前价格
+            price: 当前价格（收盘价）
             row: K线数据
 
         Returns:
@@ -1325,8 +1419,8 @@ class TradeEngine:
         """
         ref_high = row.get('high', price)
         ref_low = row.get('low', price)
+        close_price = row.get('close', price)  # 收盘价用于挂单
         tp_levels = list(config.TP_LEVELS)
-        levels = []
 
         if not tp_levels:
             return False
@@ -1340,6 +1434,18 @@ class TradeEngine:
 
         cn = config.CONTRACT_NOTIONAL
         
+        # 📊 止盈计算日志
+        self.logger.debug(
+            f"📊 [止盈检测] 持仓ID={pos.id} | 方向={pos.side} | "
+            f"入场价={pos.entry_price:.2f} | 基准价={ref_price:.2f}"
+        )
+        self.logger.debug(
+            f"   K线价格: 最高={ref_high:.2f} | 最低={ref_low:.2f} | "
+            f"收盘={close_price:.2f}"
+        )
+        
+        # 计算各级别止盈价格
+        levels = []
         for idx, lvl in enumerate(tp_levels):
             if lvl < 1:
                 pts = round(ref_price * lvl, 1)
@@ -1347,115 +1453,337 @@ class TradeEngine:
                 pts = round(ref_price * (lvl - 1), 1)
             else:
                 pts = lvl
-            target_price = round(ref_price + pts, 1) if pos.side == 'long' else round(ref_price - pts, 1)
-            # if idx == 0:
-            #     target_price = round(pos.entry_price + pts, 1) if pos.side == 'long' else round(pos.entry_price - pts, 1)
+            target_price = (
+                round(ref_price + pts, 1) 
+                if pos.side == 'long' 
+                else round(ref_price - pts, 1)
+            )
             if idx == len(tp_levels) - 1:
                 qty = pos.contracts
             else:
                 qty = int(pos.entry_contracts * config.TP_RATIO_PER_LEVEL)
-            # qty = min(qty, pos.contracts)
-            levels.append({"idx": idx, "lvl": lvl, "target_price": target_price, "qty": qty})
+            levels.append({
+                "idx": idx, 
+                "lvl": lvl, 
+                "target_price": target_price, 
+                "qty": qty
+            })
+            # 📊 每级止盈目标日志
+            self.logger.debug(
+                f"   止盈Lv{idx+1}: 级别={lvl} | 点数={pts:.1f} | "
+                f"目标价={target_price:.2f} | 数量={qty}张 | "
+                f"已触发={'是' if lvl in pos.tp_hit else '否'}"
+            )
 
         if not levels:
             return False
+
+        # 遍历各级别，检查是否触发
         for info in levels:
             lvl = info['lvl']
+            idx = info['idx']
+            target = info['target_price']
+            
             if lvl in pos.tp_hit:
                 continue
-            target = info['target_price']
+
+            # 检查是否触发止盈（使用最高/最低价判断）
             triggered = False
             if pos.side == 'long':
                 if ref_high is not None and ref_high >= target:
                     triggered = True
+                    self.logger.info(
+                        f"🎯 [止盈触发] 多头Lv{idx+1} | "
+                        f"最高价{ref_high:.2f} >= 目标价{target:.2f}"
+                    )
             else:
                 if ref_low is not None and ref_low <= target:
                     triggered = True
+                    self.logger.info(
+                        f"🎯 [止盈触发] 空头Lv{idx+1} | "
+                        f"最低价{ref_low:.2f} <= 目标价{target:.2f}"
+                    )
+
             if not triggered:
                 continue
 
-            sale_price = target
-            sum_qty = min(info['qty'],pos.contracts)
-            pos.tp_hit.append(lvl)
-            pos.tp_activated = True
-            pos.tp_hit_value = sale_price
+            # ============================================================
+            # 止盈触发！使用收盘价挂止盈单
+            # ============================================================
+            sum_qty = min(info['qty'], pos.contracts)
             if sum_qty <= 0:
                 continue
-        
 
             # 标记此级别已触发
             pos.tp_hit.append(lvl)
             pos.tp_activated = True
-            pos.tp_hit_value = sale_price
+            pos.tp_hit_value = target
 
-            # 计算盈亏 - 严格按照macd_refactor.py的逻辑
-            notional_usd = cn * sum_qty
+            # 确定平仓方向和挂单价格
+            close_side = 'SELL' if pos.side == 'long' else 'BUY'
+            
+            # 使用收盘价作为挂单价（更容易成交）
+            order_price = close_price
 
-            if pos.side == 'long':
-                # 多头止盈（macd_refactor.py line 539-540）
-                gross_btc = notional_usd * (2 / pos.entry_price - 1 / sale_price)
-                gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / sale_price)
-            else:
-                # 空头止盈（macd_refactor.py line 542-543）
-                gross_btc = notional_usd * (1 / sale_price)
-                gross_pnl_btc = notional_usd * (1 / sale_price - 1 / pos.entry_price)
+            self.logger.info("=" * 80)
+            self.logger.info(f"📈 [止盈触发] 持仓ID: {pos.id} | 级别: {lvl}")
+            self.logger.info(f"目标价: {target:.2f} | 收盘价: {close_price:.2f}")
+            self.logger.info(f"挂单价: {order_price:.2f} | 数量: {sum_qty}张")
+            self.logger.info("=" * 80)
 
-            fee_btc = 0.0
-            net_btc = gross_btc - fee_btc
+            try:
+                # 先撤销可能冲突的同方向挂单
+                try:
+                    open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                    if open_orders:
+                        for existing_order in open_orders:
+                            if existing_order.side.value == close_side:
+                                self.logger.info(
+                                    f"🔕 [撤销冲突挂单] ID={existing_order.order_id}"
+                                )
+                                self.exchange.cancel_order(
+                                    config.SYMBOL, 
+                                    existing_order.order_id
+                                )
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
 
-            # 更新已实现盈亏
-            self.realized_pnl += net_btc
-            pos.contracts -= sum_qty
+                # 挂止盈限价单
+                order = self.exchange.place_order(
+                    symbol=config.SYMBOL,
+                    side=close_side,
+                    order_type='LIMIT',
+                    quantity=float(sum_qty),
+                    price=order_price,
+                    business_order_type='TP',
+                    trace_id=pos.trace_id,
+                    kline_close_time=str(ts)
+                )
 
-            # 释放部分锁定资金
-            if not config.NO_LIMIT_POS:
-                entry_price = pos.entry_price
-                leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
-                if config.OPEN_TAKER_OR_MAKER == "MAKER":
-                    open_fee_rate = config.MAKER_FEE_RATE
-                else:
-                    open_fee_rate = config.TAKER_FEE_RATE
-
-                released_margin_btc = (sum_qty * cn) / (entry_price * leverage) if entry_price > 0 else 0
-                released_fee_btc = (sum_qty * cn * open_fee_rate) / entry_price if entry_price > 0 else 0
-                released_btc = released_margin_btc + released_fee_btc
-
-                self.locked_capital = max(0.0, self.locked_capital - released_btc)
                 self.logger.info(
-                    f"🔓 [部分平仓释放资金] {released_btc:.6f} BTC | "
-                    f"已锁定={self.locked_capital:.6f} BTC | "
-                    f"可用={self.realized_pnl - self.locked_capital:.6f} BTC"
+                    f"📋 [止盈单已挂] ID={order.order_id} | "
+                    f"状态={order.status.value} | 价格={order_price:.2f}"
                 )
 
-            # 记录日志（严格按照macd_refactor.py line 552的格式）
-            self.record_log(
-                ts,
-                f"TP{lvl}",
-                pos.side,
-                sale_price,
-                sum_qty,
-                gross_pnl_btc,
-                f"decay TP hit level {lvl} close qty={sum_qty},回撤点{sale_price*(1-config.DRAWDOWN_POINTS):.2f} 剩余分数{pos.contracts}",
-                0,
-                0
-                )
+                # 如果订单立即成交
+                if order.status.value == 'FILLED':
+                    actual_price = order.avg_price if order.avg_price > 0 else order_price
+                    self._process_tp_fill(
+                        pos, ts, actual_price, sum_qty, lvl, idx, cn
+                    )
+                    if pos.contracts <= 0:
+                        return True
+                else:
+                    # 订单未立即成交，记录订单ID等待后续检查
+                    pos.tp_order_id = order.order_id
+                    pos.tp_order_contracts = sum_qty
+                    pos.tp_order_level = idx
+                    
+                    # 对于未成交的订单，也先记录预期盈亏
+                    # 实际盈亏在订单成交时更新
+                    self.logger.info(
+                        f"⏳ 止盈单等待成交 | ID={order.order_id}"
+                    )
 
-            self.logger.info(
-                f"✓ 止盈触发 | Lv{idx+1} | {pos.side.upper()} | "
-                f"目标={target_price:.2f} | "
-                f"平仓={sum_qty}张 | "
-                f"盈亏={gross_pnl_btc:.8f} BTC | "
-                f"剩余={pos.contracts}张"
+            except Exception as e:
+                self.logger.error(f"❌ [止盈单异常] {e}", exc_info=True)
+                # 异常情况，尝试市价平仓
+                return self._market_tp_close(pos, ts, sum_qty, lvl, idx, cn)
+
+        # 检查已挂止盈单的状态
+        if pos.tp_order_id:
+            return self._check_tp_order_fill(pos, ts, cn)
+
+        return False
+
+    def _process_tp_fill(
+        self, pos: Position, ts: pd.Timestamp, 
+        sale_price: float, sum_qty: int, lvl: float, idx: int, cn: float
+    ):
+        """
+        处理止盈单成交后的逻辑
+
+        Args:
+            pos: 持仓对象
+            ts: 时间戳
+            sale_price: 成交价格
+            sum_qty: 成交数量
+            lvl: 止盈级别
+            idx: 级别索引
+            cn: 合约面值
+        """
+        # 计算盈亏
+        notional_usd = cn * sum_qty
+
+        if pos.side == 'long':
+            gross_btc = notional_usd * (2 / pos.entry_price - 1 / sale_price)
+            gross_pnl_btc = notional_usd * (
+                1 / pos.entry_price - 1 / sale_price
+            )
+        else:
+            gross_btc = notional_usd * (1 / sale_price)
+            gross_pnl_btc = notional_usd * (
+                1 / sale_price - 1 / pos.entry_price
             )
 
-            # 检查是否全部平仓（macd_refactor.py line 553-555）
-            if pos.contracts <= 0:
-                self.close_position(
-                    pos, ts, sale_price,
-                    f"take_profit_decay_{lvl}", net_btc,
-                    pnl_already_applied=True
+        fee_btc = 0.0
+        net_btc = gross_btc - fee_btc
+
+        # 更新已实现盈亏
+        self.realized_pnl += net_btc
+        pos.contracts -= sum_qty
+
+        # 释放部分锁定资金
+        if not config.NO_LIMIT_POS:
+            entry_price = pos.entry_price
+            leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
+            if config.OPEN_TAKER_OR_MAKER == "MAKER":
+                open_fee_rate = config.MAKER_FEE_RATE
+            else:
+                open_fee_rate = config.TAKER_FEE_RATE
+
+            released_margin_btc = (
+                (sum_qty * cn) / (entry_price * leverage) 
+                if entry_price > 0 else 0
+            )
+            released_fee_btc = (
+                (sum_qty * cn * open_fee_rate) / entry_price 
+                if entry_price > 0 else 0
+            )
+            released_btc = released_margin_btc + released_fee_btc
+
+            self.locked_capital = max(0.0, self.locked_capital - released_btc)
+            self.logger.info(
+                f"🔓 [部分平仓释放资金] {released_btc:.6f} BTC | "
+                f"已锁定={self.locked_capital:.6f} BTC | "
+                f"可用={self.realized_pnl - self.locked_capital:.6f} BTC"
+            )
+
+        # 记录日志
+        self.record_log(
+            ts,
+            f"TP{lvl}",
+            pos.side,
+            sale_price,
+            sum_qty,
+            gross_pnl_btc,
+            f"实时止盈 level {lvl} close qty={sum_qty}, "
+            f"回撤点{sale_price*(1-config.DRAWDOWN_POINTS):.2f} "
+            f"剩余{pos.contracts}张",
+            0,
+            0
+        )
+
+        self.logger.info(
+            f"✓ 止盈成交 | Lv{idx+1} | {pos.side.upper()} | "
+            f"价格={sale_price:.2f} | "
+            f"平仓={sum_qty}张 | "
+            f"盈亏={gross_pnl_btc:.8f} BTC | "
+            f"剩余={pos.contracts}张"
+        )
+
+        # 清理订单状态
+        pos.tp_order_id = None
+        pos.tp_order_contracts = 0
+        pos.tp_order_level = 0
+
+        # 检查是否全部平仓
+        if pos.contracts <= 0:
+            self.close_position(
+                pos, ts, sale_price,
+                f"take_profit_{lvl}", net_btc,
+                pnl_already_applied=True
+            )
+
+    def _check_tp_order_fill(
+        self, pos: Position, ts: pd.Timestamp, cn: float
+    ) -> bool:
+        """
+        检查止盈单是否成交
+
+        Args:
+            pos: 持仓对象
+            ts: 时间戳
+            cn: 合约面值
+
+        Returns:
+            bool: 是否已全部平仓
+        """
+        if not pos.tp_order_id:
+            return False
+
+        try:
+            order = self.exchange.get_order(config.SYMBOL, pos.tp_order_id)
+
+            if order.status.value == 'FILLED':
+                actual_price = order.avg_price if order.avg_price > 0 else order.price
+                sum_qty = pos.tp_order_contracts
+                lvl = config.TP_LEVELS[pos.tp_order_level] if pos.tp_order_level < len(config.TP_LEVELS) else 0
+                idx = pos.tp_order_level
+
+                self._process_tp_fill(pos, ts, actual_price, sum_qty, lvl, idx, cn)
+                
+                if pos.contracts <= 0:
+                    return True
+
+            elif order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                self.logger.warning(
+                    f"⚠️ 止盈单{order.status.value} | ID={pos.tp_order_id}"
                 )
-                return True
+                pos.tp_order_id = None
+                pos.tp_order_contracts = 0
+
+        except Exception as e:
+            self.logger.error(f"❌ [查询止盈单失败] {e}")
+
+        return False
+
+    def _market_tp_close(
+        self, pos: Position, ts: pd.Timestamp,
+        sum_qty: int, lvl: float, idx: int, cn: float
+    ) -> bool:
+        """
+        使用市价单执行止盈平仓
+
+        Args:
+            pos: 持仓对象
+            ts: 时间戳
+            sum_qty: 平仓数量
+            lvl: 止盈级别
+            idx: 级别索引
+            cn: 合约面值
+
+        Returns:
+            bool: 是否已全部平仓
+        """
+        close_side = 'SELL' if pos.side == 'long' else 'BUY'
+
+        self.logger.warning(
+            f"🚨 [市价止盈] {close_side} @ 市价 | 数量={sum_qty}张"
+        )
+
+        try:
+            order = self.exchange.place_order(
+                symbol=config.SYMBOL,
+                side=close_side,
+                order_type='MARKET',
+                quantity=float(sum_qty),
+                price=None,
+                business_order_type='TP',
+                trace_id=pos.trace_id,
+                kline_close_time=str(ts)
+            )
+
+            if order.status.value == 'FILLED':
+                actual_price = order.avg_price
+                self._process_tp_fill(pos, ts, actual_price, sum_qty, lvl, idx, cn)
+                if pos.contracts <= 0:
+                    return True
+            else:
+                self.logger.error(f"❌ 市价止盈单失败: {order.status.value}")
+
+        except Exception as e:
+            self.logger.error(f"❌ [市价止盈异常] {e}", exc_info=True)
 
         return False
 
@@ -1463,21 +1791,18 @@ class TradeEngine:
                         price: float, high: float = None,
                         low: float = None) -> bool:
         """
-        检查止损（通过Exchange接口挂止损单）
+        实时监测止损条件并挂单
 
         新逻辑:
-        1. 检查是否到达止损价格
-        2. 如果到达，挂限价止损单
-        3. 2分钟后检查订单状态:
-           - 成交 → 平仓成功
-           - 未成交 → 重新评估价格，修改止损单
-        4. 最多尝试3次
-        5. 第3次仍未成交且价格符合止损条件 → 吃单（市价单）平仓
+        1. 使用最高/最低价检测是否触及止损价
+        2. 如果触发，使用收盘价挂止损限价单
+        3. 2分钟后检查订单状态
+        4. 最多尝试3次，第3次使用市价单
 
         Args:
             pos: 持仓对象
             ts: 当前时间
-            price: 当前价格
+            price: 当前价格（收盘价）
             high: 最高价
             low: 最低价
 
@@ -1489,16 +1814,46 @@ class TradeEngine:
         ref_low = low if low is not None else price
         ref_high = high if high is not None else price
 
+        # 📊 止损计算日志
+        self.logger.debug(
+            f"📊 [止损检测] 持仓ID={pos.id} | 方向={pos.side} | "
+            f"入场价={pos.entry_price:.2f}"
+        )
+        self.logger.debug(
+            f"   止损参数: STOP_LOSS_POINTS={config.STOP_LOSS_POINTS} | "
+            f"止损价={stop_price:.2f}"
+        )
+        self.logger.debug(
+            f"   K线价格: 最高={ref_high:.2f} | 最低={ref_low:.2f} | "
+            f"收盘={price:.2f}"
+        )
+
         # 检查是否触发止损
         sl_triggered = False
         if pos.side == 'long':
             # 多头: 当前最低价 <= 止损价
             if ref_low <= stop_price:
                 sl_triggered = True
+                self.logger.info(
+                    f"🛑 [止损触发] 多头 | "
+                    f"最低价{ref_low:.2f} <= 止损价{stop_price:.2f}"
+                )
+            else:
+                self.logger.debug(
+                    f"   止损未触发: 最低价{ref_low:.2f} > 止损价{stop_price:.2f}"
+                )
         else:  # short
             # 空头: 当前最高价 >= 止损价
             if ref_high >= stop_price:
                 sl_triggered = True
+                self.logger.info(
+                    f"🛑 [止损触发] 空头 | "
+                    f"最高价{ref_high:.2f} >= 止损价{stop_price:.2f}"
+                )
+            else:
+                self.logger.debug(
+                    f"   止损未触发: 最高价{ref_high:.2f} < 止损价{stop_price:.2f}"
+                )
 
         if not sl_triggered:
             return False
@@ -1527,16 +1882,33 @@ class TradeEngine:
     def _calculate_stop_price(self, pos: Position) -> float:
         """计算止损价格"""
         ref_price = pos.entry_price
-        stop = round(
-            ref_price * config.STOP_LOSS_POINTS
-            if config.STOP_LOSS_POINTS < 1
-            else config.STOP_LOSS_POINTS, 1
-        )
+        
+        # 计算止损点数
+        if config.STOP_LOSS_POINTS < 1:
+            # 百分比模式
+            stop = round(ref_price * config.STOP_LOSS_POINTS, 1)
+            self.logger.debug(
+                f"   止损计算(百分比): {ref_price:.2f} × {config.STOP_LOSS_POINTS} = {stop:.1f}"
+            )
+        else:
+            # 固定点数模式
+            stop = config.STOP_LOSS_POINTS
+            self.logger.debug(
+                f"   止损计算(固定点数): {stop:.1f}"
+            )
 
         if pos.side == 'long':
-            return ref_price - stop
+            result = ref_price - stop
+            self.logger.debug(
+                f"   多头止损价: {ref_price:.2f} - {stop:.1f} = {result:.2f}"
+            )
+            return result
         else:  # short
-            return ref_price + stop
+            result = ref_price + stop
+            self.logger.debug(
+                f"   空头止损价: {ref_price:.2f} + {stop:.1f} = {result:.2f}"
+            )
+            return result
 
     def _place_stop_loss_order(self, pos: Position, ts: pd.Timestamp, stop_price: float) -> bool:
         """
@@ -1570,6 +1942,17 @@ class TradeEngine:
         )
 
         try:
+            # 先撤销可能冲突的同方向挂单（如止盈单）
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                if open_orders:
+                    for existing_order in open_orders:
+                        if existing_order.side.value == close_side:
+                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
+                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
+            
             # 挂限价止损单
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
@@ -1629,7 +2012,14 @@ class TradeEngine:
 
         # 检查距离上次挂单是否超过2分钟
         if pos.sl_order_last_time:
-            time_elapsed = (ts - pos.sl_order_last_time).total_seconds() / 60
+            # 统一时区处理
+            ts_naive = ts.tz_localize(None) if ts.tzinfo is not None else ts
+            sl_time_naive = (
+                pos.sl_order_last_time.tz_localize(None)
+                if hasattr(pos.sl_order_last_time, 'tzinfo') and pos.sl_order_last_time.tzinfo is not None
+                else pos.sl_order_last_time
+            )
+            time_elapsed = (ts_naive - sl_time_naive).total_seconds() / 60
             if time_elapsed < 2:
                 # 不到2分钟，继续等待
                 return False
@@ -1691,6 +2081,17 @@ class TradeEngine:
         )
 
         try:
+            # 先撤销可能冲突的同方向挂单
+            try:
+                open_orders = self.exchange.get_open_orders(config.SYMBOL)
+                if open_orders:
+                    for existing_order in open_orders:
+                        if existing_order.side.value == close_side:
+                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
+                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
+            except Exception as e:
+                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
+            
             # 使用市价单
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
@@ -1871,7 +2272,14 @@ class TradeEngine:
         Returns:
             bool: 是否超时平仓
         """
-        minutes_in_position = (ts - pos.entry_time).total_seconds() / 60
+        # 统一时区处理：将两者都转换为 naive 时间戳
+        ts_naive = ts.tz_localize(None) if ts.tzinfo is not None else ts
+        entry_time_naive = (
+            pos.entry_time.tz_localize(None) 
+            if hasattr(pos.entry_time, 'tzinfo') and pos.entry_time.tzinfo is not None 
+            else pos.entry_time
+        )
+        minutes_in_position = (ts_naive - entry_time_naive).total_seconds() / 60
 
         if (
             minutes_in_position >= config.CLOSE_TIME_MINUTES and
