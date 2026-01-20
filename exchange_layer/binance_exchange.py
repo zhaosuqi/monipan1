@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from binance.cm_futures import CMFutures
+from binance.error import ParameterRequiredError
 
 from core.logger import get_logger
 from trade_module.local_order import LocalOrderManager
@@ -205,6 +206,8 @@ class BinanceExchange(BaseExchange):
             self.logger.debug(f"   完整参数: {params}")
 
             result = self.client.new_order(**params)
+            # 记录币安返回的原始订单数据，便于排查字段差异
+            self.logger.info(f"📥 [API原始响应] new_order: {result}")
             
             self.logger.info(f"📥 [API响应] 订单ID={result.get('orderId')} 状态={result.get('status')}")
 
@@ -305,7 +308,8 @@ class BinanceExchange(BaseExchange):
             api_url = self.client.base_url
             self.logger.info(f"📤 [API请求] DELETE {api_url}/fapi/v1/order")
             self.logger.info(f"   取消订单: {symbol} 订单ID={order_id}")
-            self.client.cancel_order(symbol=symbol, orderId=int(order_id))
+            result = self.client.cancel_order(symbol=symbol, orderId=int(order_id))
+            self.logger.info(f"📥 [API原始响应] cancel_order: {result}")
             
             # 同步更新本地订单状态
             self.local_order_manager.update_order_status(order_id, 'CANCELED')
@@ -362,8 +366,11 @@ class BinanceExchange(BaseExchange):
     def cancel_all_orders(self, symbol: str) -> int:
         """取消所有订单"""
         try:
-            self.logger.info(f"取消所有订单: {symbol}")
+            api_url = self.client.base_url
+            self.logger.info(f"📤 [API请求] DELETE {api_url}/fapi/v1/allOpenOrders")
+            self.logger.info(f"   取消所有订单: {symbol}")
             result = self.client.cancel_open_orders(symbol=symbol)
+            self.logger.info(f"📥 [API原始响应] cancel_open_orders: {result}")
             count = len(result) if isinstance(result, list) else 0
             self.logger.info(f"✓ 已取消 {count} 个订单")
             return count
@@ -374,7 +381,13 @@ class BinanceExchange(BaseExchange):
     def get_order(self, symbol: str, order_id: str) -> Optional[Order]:
         """查询订单（并同步本地订单状态）"""
         try:
+            api_url = self.client.base_url
+            self.logger.info(f"📤 [API请求] GET {api_url}/fapi/v1/order")
+            self.logger.info(f"   查询订单: {symbol} 订单ID={order_id}")
+
             result = self.client.query_order(symbol=symbol, orderId=int(order_id))
+            self.logger.info(f"📥 [API原始响应] query_order: {result}")
+
             order = Order.from_dict(result)
             
             # 同步本地订单状态（如果状态有变化）
@@ -394,12 +407,21 @@ class BinanceExchange(BaseExchange):
             return None
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Order]:
-        """查询所有挂单"""
+        """查询所有挂单（CMFutures 库接口不稳定，直接用 sign_request）"""
         try:
-            if symbol:
-                result = self.client.get_open_orders(symbol=symbol)
-            else:
-                result = self.client.get_open_orders()
+            api_url = self.client.base_url
+            if not symbol:
+                symbol = config.SYMBOL
+
+            self.logger.info(f"📤 [API请求] GET {api_url}/dapi/v1/openOrders")
+            self.logger.info(f"   查询挂单: {symbol}")
+
+            # 直接签名请求，绕过库的不稳定封装
+            result = self.client.sign_request(
+                "GET", "/dapi/v1/openOrders", {"symbol": symbol}
+            )
+
+            self.logger.info(f"📥 [API原始响应] get_open_orders: {result}")
 
             orders = []
             for item in result:
@@ -456,24 +478,40 @@ class BinanceExchange(BaseExchange):
         """获取持仓信息"""
         try:
             api_url = self.client.base_url
-            self.logger.info(f"📤 [API请求] GET {api_url}/fapi/v1/positionRisk")
+            self.logger.info(f"📤 [API请求] GET {api_url}/dapi/v1/positionRisk")
             self.logger.info(f"   查询持仓: {symbol}")
-            
-            positions = self.client.position_information(symbol=symbol)
-            
-            self.logger.debug(f"📥 [API响应] 收到 {len(positions)} 条持仓记录")
 
-            for pos in positions:
+            positions = []
+            # 兼容不同版本 python-binance 的 CMFutures 方法名
+            if hasattr(self.client, 'position_information'):
+                positions = self.client.position_information(symbol=symbol)
+            elif hasattr(self.client, 'position_risk'):
+                positions = self.client.position_risk(symbol=symbol)
+            elif hasattr(self.client, 'get_position_risk'):
+                positions = self.client.get_position_risk(symbol=symbol)
+            else:
+                raise AttributeError(
+                    "CMFutures 缺少 position 信息查询接口(position_information/position_risk/get_position_risk)"
+                )
+
+            # 仅打印非零持仓，过滤掉 positionAmt=0 的记录
+            non_zero_positions = [p for p in positions if float(p.get('positionAmt', 0) or 0) != 0]
+            self.logger.debug(
+                f"📥 [API响应] 收到 {len(positions)} 条持仓记录，其中非零={len(non_zero_positions)}"
+            )
+            for idx, pos in enumerate(non_zero_positions):
+                self.logger.info(f"持仓#{idx+1}: {pos}")
+
+            for pos in non_zero_positions:
                 pos_amt = float(pos.get('positionAmt', 0))
-                if pos_amt != 0:
-                    return {
-                        'symbol': pos['symbol'],
-                        'position_amount': pos_amt,
-                        'entry_price': float(pos.get('entryPrice', 0)),
-                        'unrealized_pnl': float(pos.get('unRealizedProfit', 0)),
-                        'leverage': int(pos.get('leverage', 1)),
-                        'side': 'LONG' if pos_amt > 0 else 'SHORT',
-                    }
+                return {
+                    'symbol': pos.get('symbol', symbol),
+                    'position_amount': pos_amt,
+                    'entry_price': float(pos.get('entryPrice', 0)),
+                    'unrealized_pnl': float(pos.get('unRealizedProfit', 0)),
+                    'leverage': int(pos.get('leverage', 1)),
+                    'side': 'LONG' if pos_amt > 0 else 'SHORT',
+                }
 
             return None
         except Exception as e:

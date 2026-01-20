@@ -12,6 +12,7 @@
 5. 失败 -> 作废本地订单，继续寻找信号
 """
 
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,7 +25,8 @@ from core.logger import get_logger
 # 新增: 导入Exchange接口
 from exchange_layer import ExchangeType, create_exchange
 from trade_module.account_tracker import AccountTracker
-from trade_module.local_order import Order as LocalOrder, LocalOrderManager
+from trade_module.local_order import LocalOrderManager
+from trade_module.local_order import Order as LocalOrder
 
 
 @dataclass
@@ -120,6 +122,20 @@ class TradeEngine:
         self.order_sync_log_limit = getattr(config, 'ORDER_SYNC_LOG_LIMIT', 5)
         self.last_order_sync: Optional[pd.Timestamp] = None
 
+        # 后台订单巡检线程，避免依赖主循环
+        self._order_sync_stop_event = threading.Event()
+        self._order_sync_thread = None
+        if self.order_sync_interval > 0:
+            self._order_sync_thread = threading.Thread(
+                target=self._order_sync_loop,
+                name="order-sync-thread",
+                daemon=True,
+            )
+            self._order_sync_thread.start()
+            self.logger.info(
+                f"后台订单巡检线程已启动，每 {self.order_sync_interval}s 执行一次"
+            )
+
         self.logger.info("=" * 60)
         self.logger.info("交易引擎初始化完成")
         self.logger.info(f"初始资金: {self.initial_capital} BTC")
@@ -204,6 +220,26 @@ class TradeEngine:
             self.logger.warning(f"订单巡检异常: {e}", exc_info=True)
         finally:
             self.last_order_sync = ts
+
+    def _order_sync_loop(self):
+        """后台线程：不依赖主循环的订单巡检"""
+        # 使用 Event.wait 便于快速退出
+        interval = max(1, int(self.order_sync_interval))
+        while not self._order_sync_stop_event.is_set():
+            try:
+                ts = pd.Timestamp.utcnow()
+                # price 在反向同步中仅作备用，实时价缺失时可为0
+                self._maybe_sync_remote_orders(ts, price=0.0)
+            except Exception as e:
+                self.logger.warning(f"后台订单巡检异常: {e}", exc_info=True)
+            self._order_sync_stop_event.wait(interval)
+
+    def stop(self):
+        """停止后台订单巡检线程"""
+        if not self._order_sync_stop_event.is_set():
+            self._order_sync_stop_event.set()
+        if self._order_sync_thread and self._order_sync_thread.is_alive():
+            self._order_sync_thread.join(timeout=2)
 
     def _backfill_position_from_exchange(self, ts: pd.Timestamp, price: float):
         """如果交易所存在持仓而本地没有，则补建本地持仓，进入TP/SL逻辑"""
