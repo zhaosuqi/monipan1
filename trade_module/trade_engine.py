@@ -63,6 +63,12 @@ class Position:
     tp_order_level: int = 0  # 当前止盈单级别 (0表示未挂单)
     tp_order_contracts: int = 0  # 当前止盈单数量
 
+    # 新增: 止盈回撤追踪 (新策略)
+    tp_level_reached: int = 0  # 已达到的止盈级别 (1-N，0表示未触发)
+    tp_confirmed_price: Optional[float] = None  # 确认的止盈价格（分钟收盘价确认）
+    tp_drawdown_price: Optional[float] = None  # 止盈回撤触发价格
+    tp_highest_price: Optional[float] = None  # 止盈后的最高价（多头）/最低价（空头）
+
 
 @dataclass
 class Trade:
@@ -1608,16 +1614,157 @@ class TradeEngine:
             self.logger.error(f"❌ [市价平仓异常] {e}", exc_info=True)
             return False
 
+    def apply_take_profit_realtime(
+        self, pos: Position, ts: pd.Timestamp, realtime_price: float
+    ) -> bool:
+        """
+        实时价格止盈检测（来自socket接口的每次通知价格）
+
+        新策略:
+        1. 检测实时价格是否达到止盈级别
+        2. 如果达到的不是最后一级别，不进行止盈操作，只记录标准，标定止盈回撤价格
+        3. 如果达到最后一级别止盈标准，直接挂市价单平仓
+
+        Args:
+            pos: 持仓对象
+            ts: 当前时间
+            realtime_price: 实时价格（来自socket推送）
+
+        Returns:
+            bool: 是否全部平仓
+        """
+        tp_levels = list(config.TP_LEVELS)
+        if not tp_levels:
+            return False
+
+        # 使用入场价作为止盈参考价
+        ref_price = pos.entry_price
+        cn = config.CONTRACT_NOTIONAL
+        max_level_idx = len(tp_levels) - 1  # 最后一级别的索引
+
+        # 📊 止盈计算日志
+        self.logger.debug(
+            f"📊 [实时止盈检测] 持仓ID={pos.id} | 方向={pos.side} | "
+            f"入场价={ref_price:.2f} | 实时价={realtime_price:.2f}"
+        )
+
+        # 计算各级别止盈价格
+        for idx, lvl in enumerate(tp_levels):
+            # 跳过已触发的级别
+            if lvl in pos.tp_hit:
+                continue
+
+            # 计算目标价格
+            if lvl < 1:
+                pts = round(ref_price * lvl, 1)
+            elif lvl >= 1 and lvl < 2:
+                pts = round(ref_price * (lvl - 1), 1)
+            else:
+                pts = lvl
+
+            target_price = (
+                round(ref_price + pts, 1)
+                if pos.side == 'long'
+                else round(ref_price - pts, 1)
+            )
+
+            # 检查是否触发止盈
+            triggered = False
+            if pos.side == 'long':
+                if realtime_price >= target_price:
+                    triggered = True
+            else:  # short
+                if realtime_price <= target_price:
+                    triggered = True
+
+            if not triggered:
+                continue
+
+            # ============================================================
+            # 止盈触发！
+            # ============================================================
+            is_last_level = (idx == max_level_idx)
+
+            # 标记此级别已触发
+            pos.tp_hit.append(lvl)
+            pos.tp_activated = True
+            pos.tp_hit_value = target_price
+            pos.tp_level_reached = idx + 1  # 1-based级别
+
+            self.logger.info("=" * 80)
+            self.logger.info(f"📈 [实时止盈触发] 持仓ID: {pos.id}")
+            self.logger.info(f"级别: {idx + 1}/{len(tp_levels)} (最后级别: {'是' if is_last_level else '否'})")
+            self.logger.info(f"目标价: {target_price:.2f} | 实时价: {realtime_price:.2f}")
+            self.logger.info("=" * 80)
+
+            if is_last_level:
+                # ============================================================
+                # 最后一级别：直接市价平仓
+                # ============================================================
+                self.logger.info(f"🎯 [最后级别止盈] 直接市价全平")
+
+                # 取消所有相关挂单
+                self._cancel_all_related_orders(pos)
+
+                # 市价平仓
+                return self._market_close_for_tp(pos, ts, realtime_price)
+
+            else:
+                # ============================================================
+                # 非最后级别：只记录，标定回撤价格，不平仓
+                # ============================================================
+                # 计算回撤价格
+                if config.DRAWDOWN_POINTS <= 0:
+                    self.logger.warning("⚠️ DRAWDOWN_POINTS <= 0，无法计算回撤价格")
+                    continue
+
+                dd = (
+                    config.DRAWDOWN_POINTS if config.DRAWDOWN_POINTS > 1
+                    else round(target_price * config.DRAWDOWN_POINTS, 1)
+                )
+
+                if pos.side == 'long':
+                    # 多头：回撤价 = 止盈价 - 回撤点
+                    drawdown_price = round(target_price - dd, 1)
+                else:
+                    # 空头：回撤价 = 止盈价 + 回撤点
+                    drawdown_price = round(target_price + dd, 1)
+
+                pos.tp_confirmed_price = target_price
+                pos.tp_drawdown_price = drawdown_price
+                pos.tp_highest_price = realtime_price  # 初始化最高/最低价
+
+                self.logger.info(f"📝 [止盈级别记录] 不平仓")
+                self.logger.info(f"   止盈价: {target_price:.2f}")
+                self.logger.info(f"   回撤点: {dd:.2f}")
+                self.logger.info(f"   回撤触发价: {drawdown_price:.2f}")
+
+                # 记录日志（不平仓）
+                self.record_log(
+                    ts,
+                    'TP_LEVEL_HIT',
+                    pos.side,
+                    realtime_price,
+                    pos.contracts,
+                    0,  # 不平仓，盈亏为0
+                    f"止盈级别{idx + 1}触发 回撤价={drawdown_price:.2f}"
+                )
+
+                # 只处理第一个触发的级别
+                break
+
+        return False
+
     def apply_take_profit(
         self, pos: Position, ts: pd.Timestamp, price: float, row: Dict
     ) -> bool:
         """
-        实时监测止盈条件并挂单
+        K线止盈检测（兼容旧逻辑，用于回测模式）
 
-        新逻辑（不预先挂止盈单）:
-        1. 实时监测分钟K线的最高/最低价
-        2. 当价格触及止盈条件时，标记止盈已激活
-        3. 触发止盈后，使用收盘价挂止盈回撤单
+        新策略:
+        1. 使用K线最高/最低价检测是否达到止盈级别
+        2. 如果达到的不是最后一级别，不进行止盈操作，只记录标准，标定止盈回撤价格
+        3. 如果达到最后一级别止盈标准，直接挂市价单平仓
 
         Args:
             pos: 持仓对象
@@ -1630,182 +1777,216 @@ class TradeEngine:
         """
         ref_high = row.get('high', price)
         ref_low = row.get('low', price)
-        close_price = row.get('close', price)  # 收盘价用于挂单
+        close_price = row.get('close', price)
         tp_levels = list(config.TP_LEVELS)
 
         if not tp_levels:
             return False
 
-        # 使用benchmark_price作为止盈参考价
-        ref_price = (
-            pos.benchmark_price
-            if pos.benchmark_price
-            else pos.entry_price
-        )
-
+        # 使用入场价作为止盈参考价
+        ref_price = pos.entry_price
         cn = config.CONTRACT_NOTIONAL
+        max_level_idx = len(tp_levels) - 1  # 最后一级别的索引
         
         # 📊 止盈计算日志
         self.logger.debug(
             f"📊 [止盈检测] 持仓ID={pos.id} | 方向={pos.side} | "
-            f"入场价={pos.entry_price:.2f} | 基准价={ref_price:.2f}"
+            f"入场价={ref_price:.2f}"
         )
         self.logger.debug(
             f"   K线价格: 最高={ref_high:.2f} | 最低={ref_low:.2f} | "
             f"收盘={close_price:.2f}"
         )
-        
-        # 计算各级别止盈价格
-        levels = []
+
+        # 遍历各级别，检查是否触发
         for idx, lvl in enumerate(tp_levels):
+            # 跳过已触发的级别
+            if lvl in pos.tp_hit:
+                continue
+
+            # 计算目标价格
             if lvl < 1:
                 pts = round(ref_price * lvl, 1)
             elif lvl >= 1 and lvl < 2:
                 pts = round(ref_price * (lvl - 1), 1)
             else:
                 pts = lvl
+
             target_price = (
-                round(ref_price + pts, 1) 
-                if pos.side == 'long' 
+                round(ref_price + pts, 1)
+                if pos.side == 'long'
                 else round(ref_price - pts, 1)
             )
-            if idx == len(tp_levels) - 1:
-                qty = pos.contracts
-            else:
-                qty = int(pos.entry_contracts * config.TP_RATIO_PER_LEVEL)
-            levels.append({
-                "idx": idx, 
-                "lvl": lvl, 
-                "target_price": target_price, 
-                "qty": qty
-            })
-            # 📊 每级止盈目标日志
-            self.logger.debug(
-                f"   止盈Lv{idx+1}: 级别={lvl} | 点数={pts:.1f} | "
-                f"目标价={target_price:.2f} | 数量={qty}张 | "
-                f"已触发={'是' if lvl in pos.tp_hit else '否'}"
-            )
-
-        if not levels:
-            return False
-
-        # 遍历各级别，检查是否触发
-        for info in levels:
-            lvl = info['lvl']
-            idx = info['idx']
-            target = info['target_price']
-            
-            if lvl in pos.tp_hit:
-                continue
 
             # 检查是否触发止盈（使用最高/最低价判断）
             triggered = False
             if pos.side == 'long':
-                if ref_high is not None and ref_high >= target:
+                if ref_high is not None and ref_high >= target_price:
                     triggered = True
                     self.logger.info(
                         f"🎯 [止盈触发] 多头Lv{idx+1} | "
-                        f"最高价{ref_high:.2f} >= 目标价{target:.2f}"
+                        f"最高价{ref_high:.2f} >= 目标价{target_price:.2f}"
                     )
             else:
-                if ref_low is not None and ref_low <= target:
+                if ref_low is not None and ref_low <= target_price:
                     triggered = True
                     self.logger.info(
                         f"🎯 [止盈触发] 空头Lv{idx+1} | "
-                        f"最低价{ref_low:.2f} <= 目标价{target:.2f}"
+                        f"最低价{ref_low:.2f} <= 目标价{target_price:.2f}"
                     )
 
             if not triggered:
                 continue
 
             # ============================================================
-            # 止盈触发！使用收盘价挂止盈单
+            # 止盈触发！
             # ============================================================
-            sum_qty = min(info['qty'], pos.contracts)
-            if sum_qty <= 0:
-                continue
+            is_last_level = (idx == max_level_idx)
 
             # 标记此级别已触发
             pos.tp_hit.append(lvl)
             pos.tp_activated = True
-            pos.tp_hit_value = target
-
-            # 确定平仓方向和挂单价格
-            close_side = 'SELL' if pos.side == 'long' else 'BUY'
-            
-            # 使用收盘价作为挂单价（更容易成交）
-            order_price = close_price
+            pos.tp_hit_value = target_price
+            pos.tp_level_reached = idx + 1  # 1-based级别
 
             self.logger.info("=" * 80)
-            self.logger.info(f"📈 [止盈触发] 持仓ID: {pos.id} | 级别: {lvl}")
-            self.logger.info(f"目标价: {target:.2f} | 收盘价: {close_price:.2f}")
-            self.logger.info(f"挂单价: {order_price:.2f} | 数量: {sum_qty}张")
+            self.logger.info(f"📈 [止盈触发] 持仓ID: {pos.id}")
+            self.logger.info(f"级别: {idx + 1}/{len(tp_levels)} (最后级别: {'是' if is_last_level else '否'})")
+            self.logger.info(f"目标价: {target_price:.2f}")
             self.logger.info("=" * 80)
 
-            try:
-                # 先撤销可能冲突的同方向挂单
-                try:
-                    open_orders = self.exchange.get_open_orders(config.SYMBOL)
-                    if open_orders:
-                        for existing_order in open_orders:
-                            if existing_order.side.value == close_side:
-                                self.logger.info(
-                                    f"🔕 [撤销冲突挂单] ID={existing_order.order_id}"
-                                )
-                                self.exchange.cancel_order(
-                                    config.SYMBOL, 
-                                    existing_order.order_id
-                                )
-                except Exception as e:
-                    self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
+            if is_last_level:
+                # ============================================================
+                # 最后一级别：直接市价平仓
+                # ============================================================
+                self.logger.info(f"🎯 [最后级别止盈] 直接市价全平")
 
-                # 挂止盈限价单
-                order = self.exchange.place_order(
-                    symbol=config.SYMBOL,
-                    side=close_side,
-                    order_type='LIMIT',
-                    quantity=float(sum_qty),
-                    price=order_price,
-                    business_order_type='TP',
-                    trace_id=pos.trace_id,
-                    kline_close_time=str(ts)
+                # 取消所有相关挂单
+                self._cancel_all_related_orders(pos)
+
+                # 市价平仓
+                return self._market_close_for_tp(pos, ts, close_price)
+
+            else:
+                # ============================================================
+                # 非最后级别：只记录，标定回撤价格，不平仓
+                # ============================================================
+                # 计算回撤价格
+                if config.DRAWDOWN_POINTS <= 0:
+                    self.logger.warning("⚠️ DRAWDOWN_POINTS <= 0，无法计算回撤价格")
+                    continue
+
+                dd = (
+                    config.DRAWDOWN_POINTS if config.DRAWDOWN_POINTS > 1
+                    else round(target_price * config.DRAWDOWN_POINTS, 1)
                 )
 
-                self.logger.info(
-                    f"📋 [止盈单已挂] ID={order.order_id} | "
-                    f"状态={order.status.value} | 价格={order_price:.2f}"
-                )
-
-                # 如果订单立即成交
-                if order.status.value == 'FILLED':
-                    actual_price = order.avg_price if order.avg_price > 0 else order_price
-                    self._process_tp_fill(
-                        pos, ts, actual_price, sum_qty, lvl, idx, cn
-                    )
-                    if pos.contracts <= 0:
-                        return True
+                if pos.side == 'long':
+                    # 多头：回撤价 = 止盈价 - 回撤点
+                    drawdown_price = round(target_price - dd, 1)
                 else:
-                    # 订单未立即成交，记录订单ID等待后续检查
-                    pos.tp_order_id = order.order_id
-                    pos.tp_order_contracts = sum_qty
-                    pos.tp_order_level = idx
-                    
-                    # 对于未成交的订单，也先记录预期盈亏
-                    # 实际盈亏在订单成交时更新
-                    self.logger.info(
-                        f"⏳ 止盈单等待成交 | ID={order.order_id}"
-                    )
+                    # 空头：回撤价 = 止盈价 + 回撤点
+                    drawdown_price = round(target_price + dd, 1)
 
-            except Exception as e:
-                self.logger.error(f"❌ [止盈单异常] {e}", exc_info=True)
-                # 异常情况，尝试市价平仓
-                return self._market_tp_close(pos, ts, sum_qty, lvl, idx, cn)
+                pos.tp_confirmed_price = target_price
+                pos.tp_drawdown_price = drawdown_price
+                pos.tp_highest_price = (
+                    ref_high if pos.side == 'long' else ref_low
+                )
 
-        # 检查已挂止盈单的状态
-        if pos.tp_order_id:
-            return self._check_tp_order_fill(pos, ts, cn)
+                self.logger.info(f"📝 [止盈级别记录] 不平仓")
+                self.logger.info(f"   止盈价: {target_price:.2f}")
+                self.logger.info(f"   回撤点: {dd:.2f}")
+                self.logger.info(f"   回撤触发价: {drawdown_price:.2f}")
+
+                # 记录日志（不平仓）
+                self.record_log(
+                    ts,
+                    'TP_LEVEL_HIT',
+                    pos.side,
+                    close_price,
+                    pos.contracts,
+                    0,  # 不平仓，盈亏为0
+                    f"止盈级别{idx + 1}触发 回撤价={drawdown_price:.2f}"
+                )
+
+                # 只处理第一个触发的级别
+                break
 
         return False
+
+    def _market_close_for_tp(self, pos: Position, ts: pd.Timestamp, price: float) -> bool:
+        """
+        止盈市价平仓
+
+        Args:
+            pos: 持仓对象
+            ts: 时间戳
+            price: 参考价格
+
+        Returns:
+            bool: 是否成功平仓
+        """
+        close_side = 'SELL' if pos.side == 'long' else 'BUY'
+        cn = config.CONTRACT_NOTIONAL
+
+        self.logger.info(
+            f"🚨 [止盈市价平仓] {close_side} @ 市价 | 数量={pos.contracts}张"
+        )
+
+        try:
+            order = self.exchange.place_order(
+                symbol=config.SYMBOL,
+                side=close_side,
+                order_type='MARKET',
+                quantity=float(pos.contracts),
+                price=None,
+                business_order_type='TP',
+                trace_id=pos.trace_id,
+                kline_close_time=str(ts)
+            )
+
+            if order.status.value == 'FILLED':
+                actual_price = order.avg_price if order.avg_price > 0 else price
+                self.logger.info(f"✅ 止盈市价单成交 @ {actual_price:.2f}")
+
+                # 计算盈亏
+                notional_usd = cn * pos.contracts
+                if pos.side == 'long':
+                    gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / actual_price)
+                else:
+                    gross_pnl_btc = notional_usd * (1 / actual_price - 1 / pos.entry_price)
+
+                fee_rate = config.TAKER_FEE_RATE
+                fee_btc = (notional_usd * fee_rate) / actual_price
+                net_btc = gross_pnl_btc - fee_btc
+
+                # 更新已实现盈亏
+                self.realized_pnl += net_btc
+
+                # 记录日志
+                self.record_log(
+                    ts,
+                    'TAKE_PROFIT_FINAL',
+                    pos.side,
+                    actual_price,
+                    pos.contracts,
+                    gross_pnl_btc,
+                    f"最后级别止盈全平 级别={pos.tp_level_reached}",
+                    fee_rate,
+                    fee_btc * actual_price
+                )
+
+                # 关闭持仓
+                self.close_position(pos, ts, actual_price, 'take_profit_final', net_btc, pnl_already_applied=True)
+                return True
+            else:
+                self.logger.error(f"❌ 止盈市价单失败: {order.status.value}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ [止盈市价平仓异常] {e}", exc_info=True)
+            return False
 
     def _process_tp_fill(
         self, pos: Position, ts: pd.Timestamp, 
@@ -1998,17 +2179,79 @@ class TradeEngine:
 
         return False
 
+    def check_stop_loss_realtime(self, pos: Position, ts: pd.Timestamp,
+                                  realtime_price: float) -> bool:
+        """
+        实时价格止损检测（来自socket接口的每次通知价格）
+
+        新策略:
+        1. 检测实时价格是否达到止损标准
+        2. 如果触发，直接取消所有相关挂单
+        3. 按照市价单平仓
+
+        Args:
+            pos: 持仓对象
+            ts: 当前时间
+            realtime_price: 实时价格（来自socket推送）
+
+        Returns:
+            bool: 是否触发止损并平仓
+        """
+        # 计算止损价格
+        stop_price = self._calculate_stop_price(pos)
+
+        # 📊 止损计算日志
+        self.logger.debug(
+            f"📊 [实时止损检测] 持仓ID={pos.id} | 方向={pos.side} | "
+            f"入场价={pos.entry_price:.2f} | 实时价={realtime_price:.2f} | "
+            f"止损价={stop_price:.2f}"
+        )
+
+        # 检查是否触发止损
+        sl_triggered = False
+        if pos.side == 'long':
+            # 多头: 实时价格 <= 止损价
+            if realtime_price <= stop_price:
+                sl_triggered = True
+                self.logger.info(
+                    f"🛑 [实时止损触发] 多头 | "
+                    f"实时价{realtime_price:.2f} <= 止损价{stop_price:.2f}"
+                )
+        else:  # short
+            # 空头: 实时价格 >= 止损价
+            if realtime_price >= stop_price:
+                sl_triggered = True
+                self.logger.info(
+                    f"🛑 [实时止损触发] 空头 | "
+                    f"实时价{realtime_price:.2f} >= 止损价{stop_price:.2f}"
+                )
+
+        if not sl_triggered:
+            return False
+
+        # ============================================================
+        # 止损已触发，取消所有挂单并市价平仓
+        # ============================================================
+        pos.sl_triggered = True
+        self.logger.info("=" * 80)
+        self.logger.info(f"🛑 实时止损触发 | 持仓ID: {pos.id}")
+        self.logger.info(f"方向: {pos.side}")
+        self.logger.info(f"入场价: {pos.entry_price:.2f}")
+        self.logger.info(f"止损价: {stop_price:.2f}")
+        self.logger.info(f"实时价: {realtime_price:.2f}")
+        self.logger.info("=" * 80)
+
+        # 取消所有相关挂单
+        self._cancel_all_related_orders(pos)
+
+        # 市价单平仓
+        return self._market_close_position(pos, ts, realtime_price, reason='stop_loss')
+
     def check_stop_loss(self, pos: Position, ts: pd.Timestamp,
                         price: float, high: float = None,
                         low: float = None) -> bool:
         """
-        实时监测止损条件并挂单
-
-        新逻辑:
-        1. 使用最高/最低价检测是否触及止损价
-        2. 如果触发，使用收盘价挂止损限价单
-        3. 2分钟后检查订单状态
-        4. 最多尝试3次，第3次使用市价单
+        K线止损检测（兼容旧逻辑，用于回测模式）
 
         Args:
             pos: 持仓对象
@@ -2049,10 +2292,6 @@ class TradeEngine:
                     f"🛑 [止损触发] 多头 | "
                     f"最低价{ref_low:.2f} <= 止损价{stop_price:.2f}"
                 )
-            else:
-                self.logger.debug(
-                    f"   止损未触发: 最低价{ref_low:.2f} > 止损价{stop_price:.2f}"
-                )
         else:  # short
             # 空头: 当前最高价 >= 止损价
             if ref_high >= stop_price:
@@ -2061,23 +2300,13 @@ class TradeEngine:
                     f"🛑 [止损触发] 空头 | "
                     f"最高价{ref_high:.2f} >= 止损价{stop_price:.2f}"
                 )
-            else:
-                self.logger.debug(
-                    f"   止损未触发: 最高价{ref_high:.2f} < 止损价{stop_price:.2f}"
-                )
 
         if not sl_triggered:
             return False
 
         # ============================================================
-        # 止损已触发，开始处理
+        # 止损已触发，取消所有挂单并市价平仓
         # ============================================================
-
-        # 如果已经处理过，检查现有订单状态
-        if pos.sl_triggered:
-            return self._check_existing_sl_order(pos, ts, price, stop_price)
-
-        # 首次触发止损
         pos.sl_triggered = True
         self.logger.info("=" * 80)
         self.logger.info(f"🛑 止损触发 | 持仓ID: {pos.id}")
@@ -2087,8 +2316,11 @@ class TradeEngine:
         self.logger.info(f"当前价: {price:.2f}")
         self.logger.info("=" * 80)
 
-        # 挂止损单
-        return self._place_stop_loss_order(pos, ts, stop_price)
+        # 取消所有相关挂单
+        self._cancel_all_related_orders(pos)
+
+        # 市价单平仓
+        return self._market_close_position(pos, ts, price, reason='stop_loss')
 
     def _calculate_stop_price(self, pos: Position) -> float:
         """计算止损价格"""
@@ -2120,6 +2352,43 @@ class TradeEngine:
                 f"   空头止损价: {ref_price:.2f} + {stop:.1f} = {result:.2f}"
             )
             return result
+
+    def _cancel_all_related_orders(self, pos: Position):
+        """
+        取消所有与持仓相关的挂单
+
+        Args:
+            pos: 持仓对象
+        """
+        self.logger.info(f"🔕 [取消所有挂单] 持仓ID: {pos.id}")
+        
+        try:
+            open_orders = self.exchange.get_open_orders(config.SYMBOL)
+            if not open_orders:
+                self.logger.info("   没有需要取消的挂单")
+                return
+            
+            cancelled_count = 0
+            for order in open_orders:
+                try:
+                    self.logger.info(
+                        f"   撤销订单: ID={order.order_id} | "
+                        f"方向={order.side.value} | 价格={order.price:.2f}"
+                    )
+                    self.exchange.cancel_order(config.SYMBOL, order.order_id)
+                    cancelled_count += 1
+                except Exception as e:
+                    self.logger.warning(f"   撤销订单失败: {order.order_id} | {e}")
+            
+            self.logger.info(f"   共撤销 {cancelled_count} 个挂单")
+            
+            # 清理持仓中的订单记录
+            pos.tp_order_id = None
+            pos.tp_order_contracts = 0
+            pos.sl_order_id = None
+            
+        except Exception as e:
+            self.logger.error(f"❌ [取消挂单失败] {e}", exc_info=True)
 
     def _place_stop_loss_order(self, pos: Position, ts: pd.Timestamp, stop_price: float) -> bool:
         """
@@ -2379,7 +2648,12 @@ class TradeEngine:
     def check_drawdown(self, pos: Position, ts: pd.Timestamp,
                        price: float, row: Dict) -> bool:
         """
-        检查止盈后的回撤平仓
+        检查止盈后的回撤平仓（使用分钟收盘价检测）
+
+        新策略:
+        1. 根据止盈级别确认的价格（tp_confirmed_price）
+        2. 检测分钟收盘价是否达到回撤价格（tp_drawdown_price）
+        3. 如果达到，挂市价单全平
 
         Args:
             pos: 持仓对象
@@ -2390,85 +2664,131 @@ class TradeEngine:
         Returns:
             bool: 是否触发回撤平仓
         """
-        if (
-            not pos.tp_activated or
-            config.DRAWDOWN_POINTS <= 0 or
-            not pos.tp_hit
-        ):
-            return False
+        # 检查是否有已确认的止盈回撤价格
+        if pos.tp_drawdown_price is None:
+            # 兼容旧逻辑
+            if (
+                not pos.tp_activated or
+                config.DRAWDOWN_POINTS <= 0 or
+                not pos.tp_hit
+            ):
+                return False
+            # 使用旧的 tp_hit_value 作为确认价格
+            pos.tp_confirmed_price = pos.tp_hit_value
+            dd = (
+                config.DRAWDOWN_POINTS if config.DRAWDOWN_POINTS > 1
+                else round(pos.tp_confirmed_price * config.DRAWDOWN_POINTS, 1)
+            )
+            if pos.side == 'long':
+                pos.tp_drawdown_price = round(pos.tp_confirmed_price - dd, 1)
+            else:
+                pos.tp_drawdown_price = round(pos.tp_confirmed_price + dd, 1)
 
-        ref_price = pos.tp_hit_value
-        pprice = round(ref_price, 1)
-        dd = round(
-            config.DRAWDOWN_POINTS if config.DRAWDOWN_POINTS > 1
-            else round(pprice * config.DRAWDOWN_POINTS, 1)
-        )
-
+        # 使用分钟收盘价检测回撤
+        close_price = row.get('close', price)
         cn = config.CONTRACT_NOTIONAL
 
+        # 📊 回撤检测日志
+        self.logger.debug(
+            f"📊 [回撤检测] 持仓ID={pos.id} | 方向={pos.side}"
+        )
+        self.logger.debug(
+            f"   确认价: {pos.tp_confirmed_price:.2f} | "
+            f"回撤价: {pos.tp_drawdown_price:.2f} | "
+            f"收盘价: {close_price:.2f}"
+        )
+
+        # 检查收盘价是否达到回撤价格
+        triggered = False
         if pos.side == 'long':
-            sale_price = round(pprice - dd, 1)
-            if row['close'] <= sale_price:
-                notional_usd = cn * pos.contracts
-                fee_rate = 0
-                gross_pnl_btc = notional_usd * (
-                    1 / pos.entry_price - 1 / sale_price
+            # 多头：收盘价 <= 回撤价
+            if close_price <= pos.tp_drawdown_price:
+                triggered = True
+                self.logger.info(
+                    f"📉 [回撤触发] 多头 | "
+                    f"收盘价{close_price:.2f} <= 回撤价{pos.tp_drawdown_price:.2f}"
                 )
-                gross_btc = notional_usd * (
-                    2 / pos.entry_price - 1 / sale_price
-                )
-
-                self.realized_pnl += gross_btc
-
-                self.record_log(
-                    ts,
-                    'CLOSE_RETREAT',
-                    pos.side,
-                    sale_price,
-                    pos.contracts,
-                    gross_pnl_btc,
-                    f"止盈回撤全平 回撤价={sale_price:.2f}",
-                    fee_rate,
-                    0
-                )
-
-                self.close_position(
-                    pos, ts, sale_price, f'drawdown_close_{dd}', gross_btc,
-                    pnl_already_applied=True
-                )
-                return True
-
         else:  # short
-            sale_price = round(pprice + dd, 1)
-            if row['close'] >= sale_price:
-                notional_usd = cn * pos.contracts
-                fee_rate = 0
-                gross_pnl_btc = notional_usd * (
-                    1 / sale_price - 1 / pos.entry_price
+            # 空头：收盘价 >= 回撤价
+            if close_price >= pos.tp_drawdown_price:
+                triggered = True
+                self.logger.info(
+                    f"📉 [回撤触发] 空头 | "
+                    f"收盘价{close_price:.2f} >= 回撤价{pos.tp_drawdown_price:.2f}"
                 )
-                gross_btc = notional_usd / sale_price
 
-                self.realized_pnl += gross_btc
+        if not triggered:
+            return False
 
+        # ============================================================
+        # 回撤触发，市价全平
+        # ============================================================
+        self.logger.info("=" * 80)
+        self.logger.info(f"📉 [回撤平仓] 持仓ID: {pos.id}")
+        self.logger.info(f"确认价: {pos.tp_confirmed_price:.2f}")
+        self.logger.info(f"回撤价: {pos.tp_drawdown_price:.2f}")
+        self.logger.info(f"收盘价: {close_price:.2f}")
+        self.logger.info("=" * 80)
+
+        # 取消所有相关挂单
+        self._cancel_all_related_orders(pos)
+
+        # 市价全平
+        close_side = 'SELL' if pos.side == 'long' else 'BUY'
+
+        try:
+            order = self.exchange.place_order(
+                symbol=config.SYMBOL,
+                side=close_side,
+                order_type='MARKET',
+                quantity=float(pos.contracts),
+                price=None,
+                business_order_type='CLOSE_RETREAT',
+                trace_id=pos.trace_id,
+                kline_close_time=str(ts)
+            )
+
+            if order.status.value == 'FILLED':
+                actual_price = order.avg_price if order.avg_price > 0 else close_price
+                self.logger.info(f"✅ 回撤市价单成交 @ {actual_price:.2f}")
+
+                # 计算盈亏
+                notional_usd = cn * pos.contracts
+                if pos.side == 'long':
+                    gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / actual_price)
+                else:
+                    gross_pnl_btc = notional_usd * (1 / actual_price - 1 / pos.entry_price)
+
+                fee_rate = config.TAKER_FEE_RATE
+                fee_btc = (notional_usd * fee_rate) / actual_price
+                net_btc = gross_pnl_btc - fee_btc
+
+                # 更新已实现盈亏
+                self.realized_pnl += net_btc
+
+                # 记录日志
                 self.record_log(
                     ts,
                     'CLOSE_RETREAT',
                     pos.side,
-                    sale_price,
+                    actual_price,
                     pos.contracts,
                     gross_pnl_btc,
-                    f"止盈回撤全平 回撤价={sale_price:.2f}",
+                    f"止盈回撤全平 确认价={pos.tp_confirmed_price:.2f} 回撤价={pos.tp_drawdown_price:.2f}",
                     fee_rate,
-                    0
+                    fee_btc * actual_price
                 )
 
-                self.close_position(
-                    pos, ts, sale_price, f'drawdown_close_{dd}', gross_btc,
-                    pnl_already_applied=True
-                )
+                # 关闭持仓
+                self.close_position(pos, ts, actual_price, 'drawdown_close', net_btc, pnl_already_applied=True)
                 return True
+            else:
+                self.logger.error(f"❌ 回撤市价单失败: {order.status.value}")
+                return False
 
-        return False
+        except Exception as e:
+            self.logger.error(f"❌ [回撤市价平仓异常] {e}", exc_info=True)
+            return False
 
     def check_timeout(self, pos: Position, ts: pd.Timestamp,
                       price: float) -> bool:
@@ -2709,6 +3029,95 @@ class TradeEngine:
             'signals_detected': self.signals_count,
             'positions_opened': self.triggers_count,
         }
+
+    # ============================================================
+    # 实时价格处理（用于socket推送）
+    # ============================================================
+    def on_realtime_price(self, realtime_price: float, ts: pd.Timestamp = None) -> List[str]:
+        """
+        处理来自socket接口的实时价格通知
+
+        这个方法应该在每次收到socket价格推送时调用。
+        它会检测所有持仓的止损和止盈条件。
+
+        Args:
+            realtime_price: 实时价格
+            ts: 时间戳（可选，默认使用当前时间）
+
+        Returns:
+            List[str]: 已平仓的持仓ID列表
+        """
+        if ts is None:
+            ts = pd.Timestamp.utcnow()
+
+        if not self.positions:
+            return []
+
+        closed_positions = []
+
+        for pos in list(self.positions):
+            # 1. 检查止损
+            if self.check_stop_loss_realtime(pos, ts, realtime_price):
+                closed_positions.append(pos.id)
+                continue
+
+            # 2. 检查止盈（更新最高/最低价追踪）
+            if pos.tp_activated and pos.tp_highest_price is not None:
+                # 更新止盈后的最高/最低价
+                if pos.side == 'long':
+                    if realtime_price > pos.tp_highest_price:
+                        pos.tp_highest_price = realtime_price
+                        self.logger.debug(
+                            f"📈 [更新最高价] 持仓ID={pos.id} | "
+                            f"最高价={realtime_price:.2f}"
+                        )
+                else:
+                    if realtime_price < pos.tp_highest_price:
+                        pos.tp_highest_price = realtime_price
+                        self.logger.debug(
+                            f"📉 [更新最低价] 持仓ID={pos.id} | "
+                            f"最低价={realtime_price:.2f}"
+                        )
+
+            # 3. 检查止盈级别
+            if self.apply_take_profit_realtime(pos, ts, realtime_price):
+                closed_positions.append(pos.id)
+                continue
+
+        return closed_positions
+
+    def on_kline_close(self, ts: pd.Timestamp, row: Dict) -> List[str]:
+        """
+        处理K线收盘事件
+
+        这个方法应该在每根K线收盘时调用。
+        它会检测止盈回撤条件（使用分钟收盘价）。
+
+        Args:
+            ts: K线时间戳
+            row: K线数据
+
+        Returns:
+            List[str]: 已平仓的持仓ID列表
+        """
+        if not self.positions:
+            return []
+
+        closed_positions = []
+        price = row.get('close', row.get('price', 0))
+
+        for pos in list(self.positions):
+            # 检查止盈回撤（使用分钟收盘价）
+            if self.check_drawdown(pos, ts, price, row):
+                closed_positions.append(pos.id)
+                continue
+
+            # 检查超时
+            if self.check_timeout(pos, ts, price):
+                closed_positions.append(pos.id)
+                continue
+
+        return closed_positions
 
     def print_summary(self):
         """打印统计摘要"""
