@@ -4,6 +4,12 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
 # Environments
 .env
 .env.*
