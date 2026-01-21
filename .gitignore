@@ -27,6 +27,8 @@ data/logs/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
 
 # Caches
 *.cache/
