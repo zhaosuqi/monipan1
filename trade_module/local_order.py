@@ -2,7 +2,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.database import get_db
 from core.logger import get_logger
@@ -173,4 +173,38 @@ class LocalOrderManager:
     def get_orders_by_trace_id(self, trace_id: str) -> List[Order]:
         """根据trace_id获取订单"""
         return [order for order in self.orders.values() if order.trace_id == trace_id]
+
+    def record_user_trade(self, trade: Dict[str, Any]) -> bool:
+        """
+        将交易所返回的单笔成交（user_trade）持久化到本地表，用于审计
+
+        要求 trade 包含字段: id, orderId, price, qty, commission, commissionAsset, time, isBuyer
+        """
+        try:
+            now = datetime.now().isoformat()
+            with self.db.transaction() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO trades_audit (
+                        trade_id, order_id, price, qty, commission, commission_asset,
+                        is_buyer, trade_time, created_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    str(trade.get('id') or trade.get('tradeId') or ''),
+                    str(trade.get('orderId') or ''),
+                    float(trade.get('price') or trade.get('price', 0)),
+                    float(trade.get('qty') or trade.get('quantity') or 0),
+                    float(trade.get('commission') or 0),
+                    trade.get('commissionAsset') or '',
+                    1 if trade.get('isBuyer') or trade.get('isBuyerMaker') else 0,
+                    datetime.fromtimestamp(int(trade.get('time', 0)) / 1000).isoformat() if trade.get('time') else None,
+                    now
+                ))
+                conn.commit()
+
+            self.logger.info(f"✓ 已记录 user_trade 审计: order={trade.get('orderId')} trade_id={trade.get('id')}")
+            return True
+        except Exception as e:
+            self.logger.warning(f"记录 user_trade 审计失败: {e}", exc_info=True)
+            return False
 

@@ -556,3 +556,33 @@ class BinanceExchange(BaseExchange):
         except Exception as e:
             self.logger.error(f"获取持仓信息失败: {e}", exc_info=True)
             return None
+
+    def get_user_trades(self, symbol: str, order_id: Optional[int] = None, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        拉取用户成交明细（user_trades）
+
+        Args:
+            symbol: 交易对
+            order_id: 可选，按 orderId 查询
+            limit: 最大条数
+
+        Returns:
+            成交字典列表
+        """
+        try:
+            if not self.client:
+                return []
+
+            if order_id is not None:
+                trades = self.client.user_trades(symbol=symbol, orderId=int(order_id))
+            else:
+                try:
+                    trades = self.client.user_trades(symbol=symbol, limit=limit)
+                except TypeError:
+                    trades = self.client.user_trades(symbol=symbol)
+
+            self.logger.info(f"📥 [API原始响应] user_trades: len={len(trades) if trades else 0}")
+            return trades or []
+        except Exception as e:
+            self.logger.warning(f"获取 user_trades 失败: {e}")
+            return []

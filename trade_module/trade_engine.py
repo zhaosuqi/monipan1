@@ -218,6 +218,11 @@ class TradeEngine:
 
             # 反向同步持仓/订单
             self._backfill_position_from_exchange(ts, price)
+            # 同步可能由其它渠道平仓的情况
+            try:
+                self.sync_external_fills()
+            except Exception as e:
+                self.logger.warning(f"同步外部成交时出错: {e}")
 
         except Exception as e:  # 防御性日志，避免中断主流程
             self.logger.warning(f"订单巡检异常: {e}", exc_info=True)
@@ -902,6 +907,212 @@ class TradeEngine:
         # 检查是否需要处理止盈单
         if not config.TP_LEVELS:
             return
+
+    def sync_external_fills(self):
+        """
+        同步交易所端可能由其他渠道平仓的情况：
+        - 查询交易所持仓和挂单
+        - 如果交易所持仓数量小于本地持仓，视为部分/全部被外部平仓
+        - 尝试查询相关成交记录或订单状态以获取成交价格，计算并记录盈亏
+        - 更新本地持仓状态并撤销/清理本地订单记录
+        """
+        try:
+            exchange_pos = self.exchange.get_position(config.SYMBOL)
+        except Exception as e:
+            self.logger.warning(f"⚠️ 同步持仓失败(get_position): {e}")
+            return
+
+        # 交易所返回可能是 dict 或 list，确保为 dict
+        if not exchange_pos:
+            exchange_qty = 0
+        else:
+            try:
+                exchange_qty = abs(float(exchange_pos.get('positionAmt', exchange_pos.get('position_amount', 0))))
+            except Exception:
+                # 兼容不同API字段名
+                exchange_qty = abs(float(exchange_pos.get('position_amount', 0))) if isinstance(exchange_pos, dict) else 0
+
+        # 遍历本地持仓，检测差异并按差量处理
+        for pos in list(self.positions):
+            local_qty = int(pos.contracts)
+            if local_qty == 0:
+                continue
+
+            # 获取交易所端当前持仓数量
+            try:
+                remote_pos = self.exchange.get_position(config.SYMBOL)
+                remote_qty = abs(int(remote_pos.get('position_amount', 0))) if remote_pos else 0
+            except Exception:
+                remote_qty = exchange_qty
+
+            if remote_qty >= local_qty:
+                # 交易所持仓不比本地少，跳过
+                continue
+
+            closed_qty = local_qty - remote_qty
+            self.logger.info(
+                f"🔁 [外部平仓检测] 本地持仓={local_qty} 交易所持仓={remote_qty} 差量={closed_qty} | 持仓ID={pos.id}"
+            )
+
+            # 尝试通过关联的止盈/本地订单或 user_trades 获取成交明细
+            fills: List[Dict[str, Any]] = []
+
+            # 优先按本地记录的 tp_order_id 查询成交明细
+            tried_order_ids = []
+            if pos.tp_order_id:
+                tried_order_ids.append(pos.tp_order_id)
+
+            # 查询本地 order_manager 的相同 trace_id 下的订单，尝试取 order_id
+            try:
+                local_orders = self.order_manager.get_orders_by_trace_id(pos.trace_id)
+                for lo in local_orders:
+                    if getattr(lo, 'order_id', None):
+                        tried_order_ids.append(lo.order_id)
+            except Exception:
+                pass
+
+            # 去重并尝试拉取成交明细
+            tried_order_ids = [x for i, x in enumerate(tried_order_ids) if x and x not in tried_order_ids[:i]]
+
+            for oid in tried_order_ids:
+                try:
+                    trades = self.exchange.get_user_trades(config.SYMBOL, order_id=int(oid))
+                    if trades:
+                        fills.extend(trades)
+                except Exception:
+                    continue
+
+            # 如果没有通过 orderId 找到 fills，则拉取最近的一些成交作为回退
+            if not fills:
+                try:
+                    # 这里调用 get_user_trades 不带 orderId，返回最近 trades
+                    recent_trades = self.exchange.get_user_trades(config.SYMBOL, order_id=None, limit=200)
+                    if recent_trades:
+                        fills.extend(recent_trades[-200:])
+                except Exception:
+                    pass
+
+            # 如果仍未找到任何成交明细，退回使用 remote_pos 的价格字段或 entry_price
+            if not fills:
+                fallback_price = None
+                if exchange_pos:
+                    fallback_price = exchange_pos.get('markPrice') or exchange_pos.get('mark_price') or exchange_pos.get('lastPrice')
+                if not fallback_price:
+                    fallback_price = pos.entry_price
+
+                self.logger.warning(
+                    f"⚠️ 未找到外部平仓成交明细，使用回退价 {fallback_price} 计算盈亏 | 持仓ID={pos.id}"
+                )
+
+                # 直接按差量比例计算盈亏并扣减持仓
+                try:
+                    closed_price = float(fallback_price)
+                    # 计算按 closed_qty 的盈亏（复用回撤计算逻辑）
+                    cn = config.CONTRACT_NOTIONAL
+                    notional_usd = cn * closed_qty
+                    if pos.side == 'long':
+                        gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / closed_price)
+                    else:
+                        gross_pnl_btc = notional_usd * (1 / closed_price - 1 / pos.entry_price)
+
+                    fee_btc = (notional_usd * config.TAKER_FEE_RATE) / closed_price
+                    net_btc = gross_pnl_btc - fee_btc
+
+                    # 更新本地持仓与已实现盈亏
+                    pos.contracts = remote_qty
+                    self.realized_pnl += net_btc
+
+                    ts = pd.Timestamp.utcnow()
+                    self.record_log(
+                        ts,
+                        'EXTERNAL_CLOSE',
+                        pos.side,
+                        closed_price,
+                        closed_qty,
+                        gross_pnl_btc,
+                        f"外部平仓回退计算 closed={closed_qty} / local={local_qty} / remote={remote_qty}",
+                    )
+
+                    # 如果已全部平仓，移除持仓
+                    if pos.contracts <= 0:
+                        self.logger.info(f"ℹ️ 持仓已被外部平全仓，持仓ID={pos.id} 已移除")
+                        self.positions.remove(pos)
+
+                except Exception as e:
+                    self.logger.error(f"❌ 外部平仓回退计算失败: {e}", exc_info=True)
+
+                continue
+
+            # 将 fills 按时间排序，取最近的 trades, 汇总直到达到差量 closed_qty
+            fills_sorted = sorted(fills, key=lambda t: float(t.get('time', 0)))
+            accum_qty = 0.0
+            accum_notional = 0.0
+            used_trades = []
+            for t in reversed(fills_sorted):
+                qty = float(t.get('qty', t.get('quantity', 0)))
+                price_t = float(t.get('price', t.get('avgPrice', 0)))
+                take = min(qty, closed_qty - accum_qty)
+                if take <= 0:
+                    break
+                accum_qty += take
+                accum_notional += take * price_t
+                used_trades.append({'qty': take, 'price': price_t, 'raw': t})
+                if accum_qty >= closed_qty:
+                    break
+
+            if accum_qty <= 0:
+                self.logger.warning(f"⚠️ 找到的成交无法覆盖差量，跳过持仓ID={pos.id}")
+                continue
+
+            avg_fill_price = accum_notional / accum_qty if accum_qty > 0 else pos.entry_price
+
+            # 计算盈亏
+            try:
+                cn = config.CONTRACT_NOTIONAL
+                notional_usd = cn * accum_qty
+                if pos.side == 'long':
+                    gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / avg_fill_price)
+                else:
+                    gross_pnl_btc = notional_usd * (1 / avg_fill_price - 1 / pos.entry_price)
+
+                fee_btc = (notional_usd * config.TAKER_FEE_RATE) / avg_fill_price
+                net_btc = gross_pnl_btc - fee_btc
+
+                # 更新本地持仓
+                pos.contracts = remote_qty
+                self.realized_pnl += net_btc
+
+                ts = pd.Timestamp.utcnow()
+
+                # 逐笔记录成交审计到本地数据库
+                try:
+                    for ut in used_trades:
+                        raw = ut.get('raw') or {}
+                        try:
+                            self.order_manager.record_user_trade(raw)
+                        except Exception:
+                            self.logger.debug(f"⚠️ 记录单笔成交审计失败，继续: {raw}")
+                except Exception:
+                    self.logger.debug("⚠️ 记录成交审计时出现异常")
+
+                self.record_log(
+                    ts,
+                    'EXTERNAL_CLOSE',
+                    pos.side,
+                    avg_fill_price,
+                    int(accum_qty),
+                    gross_pnl_btc,
+                    f"外部平仓 matched_trades={len(used_trades)} closed={int(accum_qty)}",
+                )
+
+                if pos.contracts <= 0:
+                    self.logger.info(f"ℹ️ 持仓已被外部平全仓，持仓ID={pos.id} 已移除")
+                    self.positions.remove(pos)
+
+            except Exception as e:
+                self.logger.error(f"❌ 处理外部平仓盈亏失败: {e}", exc_info=True)
+
+        return
 
         current_contracts = pos.contracts
 

@@ -6,9 +6,9 @@
 
 import sqlite3
 import threading
-from pathlib import Path
-from typing import List, Tuple, Any, Optional
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
 
 
 class Database:
@@ -236,6 +236,22 @@ class Database:
                 fee_usd REAL,
                 trace_id TEXT,
                 realized_pnl REAL
+            )
+        """)
+
+        # 外部成交审计表（用于记录交易所返回的每笔 user_trade）
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS trades_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id TEXT,
+                order_id TEXT,
+                price REAL,
+                qty REAL,
+                commission REAL,
+                commission_asset TEXT,
+                is_buyer INTEGER,
+                trade_time TEXT,
+                created_time TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
