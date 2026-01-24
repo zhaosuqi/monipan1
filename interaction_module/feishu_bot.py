@@ -611,6 +611,81 @@ class FeishuBot:
 
         return self._send_rich_card(card)
 
+    def send_system_startup_notification(
+        self,
+        system_name: str,
+        mode: str,
+        symbol: str,
+        exchange_type: str = None
+    ) -> bool:
+        """
+        发送系统启动通知
+
+        Args:
+            system_name: 系统名称
+            mode: 运行模式 (测试网/实盘)
+            symbol: 交易对
+            exchange_type: 交易所类型
+        """
+        mode_color = "blue" if mode == "测试网" else "red"
+        mode_icon = "🧪" if mode == "测试网" else "🔴"
+
+        time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"系统启动通知 {mode_icon}",
+                    "tag": "plain_text"
+                },
+                "template": mode_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**系统名称**\n{system_name}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**运行模式**\n{mode}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易对**\n{symbol}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易所**\n{exchange_type or '币安'}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**启动时间**\n{time_str}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
     def send_sync_close_notification(
         self,
         symbol: str,
@@ -757,6 +832,81 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**同步时间**\n{time_str}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
+    def send_system_startup_notification(
+        self,
+        system_name: str,
+        mode: str,
+        symbol: str,
+        exchange_type: str = None
+    ) -> bool:
+        """
+        发送系统启动通知
+
+        Args:
+            system_name: 系统名称
+            mode: 运行模式 (测试网/实盘)
+            symbol: 交易对
+            exchange_type: 交易所类型
+        """
+        mode_color = "blue" if mode == "测试网" else "red"
+        mode_icon = "🧪" if mode == "测试网" else "🔴"
+
+        time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"系统启动通知 {mode_icon}",
+                    "tag": "plain_text"
+                },
+                "template": mode_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**系统名称**\n{system_name}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**运行模式**\n{mode}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易对**\n{symbol}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易所**\n{exchange_type or '币安'}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**启动时间**\n{time_str}"
                             }
                         }
                     ]

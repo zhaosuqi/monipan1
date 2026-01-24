@@ -36,6 +36,7 @@ from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
 from signal_module.signal_calculator import SignalCalculator
 from trade_module.trade_engine import TradeEngine
+from interaction_module.feishu_bot import FeishuBot
 
 logger = get_logger('data.db_driven_trading')
 
@@ -79,12 +80,28 @@ class DBDrivenTrader:
         # 初始化交易引擎（会自动根据配置选择交易所）
         self._init_exchange()
         self.trade_engine = TradeEngine()
-        
+
+        # 飞书通知机器人
+        self.feishu_bot = FeishuBot()
+
         self.logger.info("=" * 60)
         self.logger.info("数据驱动交易器初始化完成")
         self.logger.info(f"使用测试网: {self.use_testnet}")
         self.logger.info(f"交易对: {config.SYMBOL}")
         self.logger.info("=" * 60)
+
+        # 发送系统启动通知
+        try:
+            mode_str = "测试网" if self.use_testnet else "实盘"
+            exchange_type = os.environ.get('EXCHANGE_TYPE', 'binance_testnet' if self.use_testnet else 'binance_live')
+            self.feishu_bot.send_system_startup_notification(
+                system_name="数据驱动交易系统",
+                mode=mode_str,
+                symbol=config.SYMBOL,
+                exchange_type=exchange_type
+            )
+        except Exception as e:
+            self.logger.warning(f"飞书启动通知发送失败: {e}")
     
     def _get_engine(self):
         """获取数据库引擎"""
