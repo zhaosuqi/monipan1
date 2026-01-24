@@ -391,8 +391,9 @@ class SignalCalculator:
         # DIF15限制
         if is_long and (dif15 > config.T0_DIF15_LIMIT or dif15 < config.T0_DIF15_LIMIT_MIN):
             is_long = False
-            reasons.append(f"DIF15: {dif15:.2f}")
-
+            reasons.append(f"DIF15: {dif15:.2f} config.T0_DIF15_LIMIT:{config.T0_DIF15_LIMIT} config.T0_DIF15_LIMIT_MIN:{config.T0_DIF15_LIMIT_MIN}")
+            if debug_mode:
+                logger.warning(f"❌ [{ts_str}] DIF15限制: {dif15:.2f} 超出范围 [{config.T0_DIF15_LIMIT_MIN}, {config.T0_DIF15_LIMIT}]")
         # HIST15均值检查 (第一组)
         if is_long and config.MEANS_HIST15_COUNT != 0:
             hist15_mean = row.get('hist15_mean', 0)
