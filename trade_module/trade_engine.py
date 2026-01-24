@@ -27,6 +27,8 @@ from exchange_layer import ExchangeType, create_exchange
 from trade_module.account_tracker import AccountTracker
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
+# 飞书通知
+from interaction_module.feishu_bot import FeishuBot
 
 
 @dataclass
@@ -92,6 +94,8 @@ class TradeEngine:
         self.logger = get_logger('trade_module.engine')
         self.order_manager = LocalOrderManager()
         self.account_tracker = AccountTracker()
+        # 飞书通知机器人
+        self.feishu_bot = FeishuBot()
 
         # 新增: 创建Exchange实例，支持外部注入
         self.exchange = exchange or create_exchange()
@@ -309,6 +313,18 @@ class TradeEngine:
         self.logger.warning(
             f"⚠️ 发现远端持仓但本地缺失，已补建 | 方向={side} | 数量={contracts}张 | 入场价={entry_price:.2f}"
         )
+
+        # 飞书同步开仓通知
+        try:
+            self.feishu_bot.send_sync_open_notification(
+                symbol=config.SYMBOL,
+                side=side,
+                price=entry_price,
+                contracts=contracts,
+                ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
+            )
+        except Exception as e:
+            self.logger.warning(f"飞书同步开仓通知发送失败: {e}")
 
         # 补建本地订单记录便于数据库一致性
         try:
@@ -600,6 +616,19 @@ class TradeEngine:
         self.positions.append(pos)
         self.triggers_count += 1
 
+        # 飞书开仓通知
+        try:
+            self.feishu_bot.send_open_position_notification(
+                symbol=config.SYMBOL,
+                side=side,
+                price=actual_price,
+                contracts=max_contracts,
+                signal_name=signal_name,
+                ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
+            )
+        except Exception as e:
+            self.logger.warning(f"飞书开仓通知发送失败: {e}")
+
         if debug_mode:
             self.logger.info(f"✅ [{ts_str}] 🎉 开仓成功！{side} {max_contracts}张 @ {actual_price:.2f}")
 
@@ -779,6 +808,28 @@ class TradeEngine:
             f"原因={reason} | "
             f"当前资金={self.realized_pnl:.6f} BTC"
         )
+
+        # 飞书平仓通知
+        try:
+            # 计算手续费USD（平仓手续费）
+            fee_usd = fee_btc * close_price if 'fee_btc' in locals() else (notional_usd * close_fee_rate) / close_price * close_price
+            self.feishu_bot.send_close_position_notification(
+                symbol=config.SYMBOL,
+                side=pos.side,
+                entry_price=pos.entry_price,
+                close_price=close_price,
+                contracts=pos.contracts,
+                entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
+                close_time=close_time.to_pydatetime() if hasattr(close_time, 'to_pydatetime') else close_time,
+                gross_usd=gross_usd,
+                fee_usd=abs(fee_usd),
+                net_usd=net_usd,
+                net_btc=net_btc,
+                reason=reason,
+                tp_hit=pos.tp_hit
+            )
+        except Exception as e:
+            self.logger.warning(f"飞书平仓通知发送失败: {e}")
 
         # 移除持仓
         self.positions.remove(pos)
@@ -1042,6 +1093,28 @@ class TradeEngine:
                     # 如果已全部平仓，移除持仓
                     if pos.contracts <= 0:
                         self.logger.info(f"ℹ️ 持仓已被外部平全仓，持仓ID={pos.id} 已移除")
+
+                        # 飞书同步平仓通知（回退计算）
+                        try:
+                            gross_usd = gross_pnl_btc * closed_price
+                            fee_usd = fee_btc * closed_price
+                            net_usd = net_btc * closed_price
+                            self.feishu_bot.send_sync_close_notification(
+                                symbol=config.SYMBOL,
+                                side=pos.side,
+                                entry_price=pos.entry_price,
+                                close_price=closed_price,
+                                contracts=closed_qty,
+                                entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
+                                close_time=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts,
+                                gross_usd=gross_usd,
+                                fee_usd=fee_usd,
+                                net_usd=net_usd,
+                                net_btc=net_btc
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"飞书同步平仓通知发送失败: {e}")
+
                         self.positions.remove(pos)
 
                 except Exception as e:
@@ -1113,6 +1186,28 @@ class TradeEngine:
 
                 if pos.contracts <= 0:
                     self.logger.info(f"ℹ️ 持仓已被外部平全仓，持仓ID={pos.id} 已移除")
+
+                    # 飞书同步平仓通知（成交明细）
+                    try:
+                        gross_usd = gross_pnl_btc * avg_fill_price
+                        fee_usd = fee_btc * avg_fill_price
+                        net_usd = net_btc * avg_fill_price
+                        self.feishu_bot.send_sync_close_notification(
+                            symbol=config.SYMBOL,
+                            side=pos.side,
+                            entry_price=pos.entry_price,
+                            close_price=avg_fill_price,
+                            contracts=int(accum_qty),
+                            entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
+                            close_time=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts,
+                            gross_usd=gross_usd,
+                            fee_usd=fee_usd,
+                            net_usd=net_usd,
+                            net_btc=net_btc
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"飞书同步平仓通知发送失败: {e}")
+
                     self.positions.remove(pos)
 
             except Exception as e:
@@ -1697,6 +1792,28 @@ class TradeEngine:
             self.logger.info(f"目标价: {target_price:.2f} | 实时价: {realtime_price:.2f}")
             self.logger.info("=" * 80)
 
+            # 飞书止盈触发通知
+            try:
+                # 计算未实现盈亏
+                cn = config.CONTRACT_NOTIONAL
+                if pos.side == 'long':
+                    unrealized_usd = (realtime_price - pos.entry_price) * (pos.contracts * pos.contract_size_btc / realtime_price)
+                else:
+                    unrealized_usd = (pos.entry_price - realtime_price) * (pos.contracts * pos.contract_size_btc / realtime_price)
+
+                self.feishu_bot.send_tp_hit_notification(
+                    symbol=config.SYMBOL,
+                    side=pos.side,
+                    entry_price=pos.entry_price,
+                    current_price=realtime_price,
+                    tp_level=idx + 1,
+                    tp_price=target_price,
+                    contracts=pos.contracts,
+                    unrealized_pnl=unrealized_usd
+                )
+            except Exception as e:
+                self.logger.warning(f"飞书止盈触发通知发送失败: {e}")
+
             if is_last_level:
                 # ============================================================
                 # 最后一级别：直接市价平仓
@@ -1854,6 +1971,28 @@ class TradeEngine:
             self.logger.info(f"级别: {idx + 1}/{len(tp_levels)} (最后级别: {'是' if is_last_level else '否'})")
             self.logger.info(f"目标价: {target_price:.2f}")
             self.logger.info("=" * 80)
+
+            # 飞书止盈触发通知
+            try:
+                # 计算未实现盈亏
+                cn = config.CONTRACT_NOTIONAL
+                if pos.side == 'long':
+                    unrealized_usd = (close_price - pos.entry_price) * (pos.contracts * pos.contract_size_btc / close_price)
+                else:
+                    unrealized_usd = (pos.entry_price - close_price) * (pos.contracts * pos.contract_size_btc / close_price)
+
+                self.feishu_bot.send_tp_hit_notification(
+                    symbol=config.SYMBOL,
+                    side=pos.side,
+                    entry_price=pos.entry_price,
+                    current_price=close_price,
+                    tp_level=idx + 1,
+                    tp_price=target_price,
+                    contracts=pos.contracts,
+                    unrealized_pnl=unrealized_usd
+                )
+            except Exception as e:
+                self.logger.warning(f"飞书止盈触发通知发送失败: {e}")
 
             if is_last_level:
                 # ============================================================
@@ -2729,6 +2868,27 @@ class TradeEngine:
         self.logger.info(f"回撤价: {pos.tp_drawdown_price:.2f}")
         self.logger.info(f"收盘价: {close_price:.2f}")
         self.logger.info("=" * 80)
+
+        # 飞书止盈回撤通知
+        try:
+            # 计算未实现盈亏
+            cn = config.CONTRACT_NOTIONAL
+            if pos.side == 'long':
+                unrealized_usd = (close_price - pos.entry_price) * (pos.contracts * pos.contract_size_btc / close_price)
+            else:
+                unrealized_usd = (pos.entry_price - close_price) * (pos.contracts * pos.contract_size_btc / close_price)
+
+            self.feishu_bot.send_tp_pullback_notification(
+                symbol=config.SYMBOL,
+                side=pos.side,
+                entry_price=pos.entry_price,
+                current_price=close_price,
+                highest_tp_level=pos.tp_level_reached,
+                pullback_price=pos.tp_drawdown_price,
+                unrealized_pnl=unrealized_usd
+            )
+        except Exception as e:
+            self.logger.warning(f"飞书止盈回撤通知发送失败: {e}")
 
         # 取消所有相关挂单
         self._cancel_all_related_orders(pos)
