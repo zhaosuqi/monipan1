@@ -810,26 +810,26 @@ class TradeEngine:
         )
 
         # 飞书平仓通知
-        try:
-            # 计算手续费USD（平仓手续费）
-            fee_usd = fee_btc * close_price if 'fee_btc' in locals() else (notional_usd * close_fee_rate) / close_price * close_price
-            self.feishu_bot.send_close_position_notification(
-                symbol=config.SYMBOL,
-                side=pos.side,
-                entry_price=pos.entry_price,
-                close_price=close_price,
-                contracts=pos.contracts,
-                entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
-                close_time=close_time.to_pydatetime() if hasattr(close_time, 'to_pydatetime') else close_time,
-                gross_usd=gross_usd,
-                fee_usd=abs(fee_usd),
-                net_usd=net_usd,
-                net_btc=net_btc,
-                reason=reason,
-                tp_hit=pos.tp_hit
-            )
-        except Exception as e:
-            self.logger.warning(f"飞书平仓通知发送失败: {e}")
+        # try:
+        #     # 计算手续费USD（平仓手续费）
+        #     fee_usd = fee_btc * close_price if 'fee_btc' in locals() else (notional_usd * close_fee_rate) / close_price * close_price
+        #     self.feishu_bot.send_close_position_notification(
+        #         symbol=config.SYMBOL,
+        #         side=pos.side,
+        #         entry_price=pos.entry_price,
+        #         close_price=close_price,
+        #         contracts=pos.contracts,
+        #         entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
+        #         close_time=close_time.to_pydatetime() if hasattr(close_time, 'to_pydatetime') else close_time,
+        #         gross_usd=gross_usd,
+        #         fee_usd=abs(fee_usd),
+        #         net_usd=net_usd,
+        #         net_btc=net_btc,
+        #         reason=reason,
+        #         tp_hit=pos.tp_hit
+        #     )
+        # except Exception as e:
+        #     self.logger.warning(f"飞书平仓通知发送失败: {e}")
 
         # 移除持仓
         self.positions.remove(pos)

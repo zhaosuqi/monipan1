@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """飞书通知机器人 - 支持开仓、平仓、止盈等交易事件通知"""
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
 from core.logger import get_logger
@@ -9,10 +9,18 @@ from core.config import config
 
 
 class FeishuBot:
+    # 东八区时区
+    TZ_EAST8 = timezone(timedelta(hours=8))
+
     def __init__(self):
         self.logger = get_logger('interaction_module.feishu')
         self.webhook = config.FEISHU_WEBHOOK
         self.enabled = config.FEISHU_ENABLED
+
+    @staticmethod
+    def _get_now_str() -> str:
+        """获取当前东八区时间字符串"""
+        return datetime.now(FeishuBot.TZ_EAST8).strftime("%Y-%m-%d %H:%M:%S")
 
     def send_message(self, message: str) -> bool:
         """发送普通文本消息"""
@@ -145,6 +153,13 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**开仓时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
@@ -325,10 +340,17 @@ class FeishuBot:
                             }
                         },
                         {
-                            "is_short": False,
+                            "is_short": True,
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**平仓时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
@@ -416,6 +438,13 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**未实现盈亏**\n${unrealized_pnl:+.2f}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
@@ -509,6 +538,13 @@ class FeishuBot:
                                 "tag": "lark_md",
                                 "content": f"**未实现盈亏**\n${unrealized_pnl:+.2f}"
                             }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
+                            }
                         }
                     ]
                 }
@@ -601,10 +637,17 @@ class FeishuBot:
                             }
                         },
                         {
-                            "is_short": False,
+                            "is_short": True,
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**同步时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
@@ -632,8 +675,6 @@ class FeishuBot:
         """
         mode_color = "blue" if mode == "测试网" else "red"
         mode_icon = "🧪" if mode == "测试网" else "🔴"
-
-        time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         card = {
             "header": {
@@ -676,10 +717,17 @@ class FeishuBot:
                             }
                         },
                         {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**启动时间**\n{self._get_now_str()}"
+                            }
+                        },
+                        {
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**启动时间**\n{time_str}"
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
@@ -831,10 +879,17 @@ class FeishuBot:
                     "tag": "div",
                     "fields": [
                         {
-                            "is_short": False,
+                            "is_short": True,
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**同步时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
                             }
                         }
                     ]
