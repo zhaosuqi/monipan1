@@ -462,7 +462,8 @@ class FeishuBot:
         current_price: float,
         highest_tp_level: int,
         pullback_price: float,
-        unrealized_pnl: float
+        unrealized_pnl: float,
+        contracts: int
     ) -> bool:
         """
         发送止盈回撤通知
@@ -475,6 +476,7 @@ class FeishuBot:
             highest_tp_level: 最高触及的止盈级别
             pullback_price: 回撤触发价格
             unrealized_pnl: 未实现盈亏(USD)
+            contracts: 回撤的合约数量
         """
         side_cn = "做多" if side == 'long' else "做空"
 
@@ -530,6 +532,13 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**回撤价**\n${pullback_price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**回撤数量**\n{contracts}张"
                             }
                         },
                         {

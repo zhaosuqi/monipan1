@@ -13,6 +13,7 @@
 """
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -809,161 +810,9 @@ class TradeEngine:
             f"当前资金={self.realized_pnl:.6f} BTC"
         )
 
-        # 飞书平仓通知
-        # try:
-        #     # 计算手续费USD（平仓手续费）
-        #     fee_usd = fee_btc * close_price if 'fee_btc' in locals() else (notional_usd * close_fee_rate) / close_price * close_price
-        #     self.feishu_bot.send_close_position_notification(
-        #         symbol=config.SYMBOL,
-        #         side=pos.side,
-        #         entry_price=pos.entry_price,
-        #         close_price=close_price,
-        #         contracts=pos.contracts,
-        #         entry_time=pos.entry_time.to_pydatetime() if hasattr(pos.entry_time, 'to_pydatetime') else pos.entry_time,
-        #         close_time=close_time.to_pydatetime() if hasattr(close_time, 'to_pydatetime') else close_time,
-        #         gross_usd=gross_usd,
-        #         fee_usd=abs(fee_usd),
-        #         net_usd=net_usd,
-        #         net_btc=net_btc,
-        #         reason=reason,
-        #         tp_hit=pos.tp_hit
-        #     )
-        # except Exception as e:
-        #     self.logger.warning(f"飞书平仓通知发送失败: {e}")
-
         # 移除持仓
         self.positions.remove(pos)
 
-    def _place_initial_tp_order(self, pos: Position, ts=None):
-        """
-        开仓后立即挂最高级别的止盈单
-
-        Args:
-            pos: 持仓对象
-            ts: 当前K线时间戳
-        """
-        if not config.TP_LEVELS:
-            return
-
-        # 获取最高级别（最后一个）
-        tp_levels = list(config.TP_LEVELS)
-        max_level_idx = len(tp_levels) - 1
-        max_level = tp_levels[max_level_idx]
-
-        # 计算止盈价格
-        ref_price = pos.benchmark_price if pos.benchmark_price else pos.entry_price
-
-        if max_level < 1:
-            pts = round(ref_price * max_level, 1)
-        elif max_level >= 1 and max_level < 2:
-            pts = round(ref_price * (max_level - 1), 1)
-        else:
-            pts = max_level
-
-        tp_price = round(ref_price + pts, 1) if pos.side == 'long' else round(ref_price - pts, 1)
-
-        # 最高级别平全仓
-        tp_contracts = pos.contracts
-
-        # 确定平仓方向
-        close_side = 'SELL' if pos.side == 'long' else 'BUY'
-
-        self.logger.info("=" * 80)
-        self.logger.info(f"📈 [挂初始止盈单] 持仓ID: {pos.id}")
-        self.logger.info(f"级别: {max_level_idx + 1}/{len(tp_levels)} ({max_level})")
-        self.logger.info(f"止盈价: {tp_price:.2f}")
-        self.logger.info(f"数量: {tp_contracts}张 ({close_side})")
-        self.logger.info("=" * 80)
-
-        try:
-            # 验证交易所实际持仓
-            exchange_pos = self.exchange.get_position(config.SYMBOL)
-            if not exchange_pos:
-                self.logger.warning(f"⚠️ [跳过止盈单] 交易所端无持仓，可能已被平仓")
-                return
-            
-            exchange_qty = abs(float(exchange_pos.get('position_amount', 0)))
-            if exchange_qty <= 0:
-                self.logger.warning(f"⚠️ [跳过止盈单] 交易所持仓数量为0")
-                return
-            
-            # 检查是否已有同方向的挂单（避免重复挂单导致 ReduceOnly 被拒）
-            try:
-                open_orders = self.exchange.get_open_orders(config.SYMBOL)
-                if open_orders:
-                    # 检查是否有同方向的平仓挂单
-                    for existing_order in open_orders:
-                        if existing_order.side.value == close_side:
-                            existing_qty = existing_order.quantity
-                            self.logger.warning(
-                                f"⚠️ [跳过止盈单] 已有{close_side}方向挂单 "
-                                f"ID={existing_order.order_id} 数量={existing_qty}"
-                            )
-                            # 记录已有的止盈单ID
-                            pos.tp_order_id = existing_order.order_id
-                            pos.tp_order_contracts = int(existing_qty)
-                            return
-            except Exception as e:
-                self.logger.warning(f"⚠️ 检查挂单失败: {e}")
-            
-            # 确保止盈数量不超过实际持仓
-            actual_tp_contracts = min(tp_contracts, int(exchange_qty))
-            if actual_tp_contracts != tp_contracts:
-                self.logger.warning(
-                    f"⚠️ [调整止盈数量] 本地={tp_contracts}张 交易所={int(exchange_qty)}张 → 使用{actual_tp_contracts}张"
-                )
-                tp_contracts = actual_tp_contracts
-            
-            if tp_contracts <= 0:
-                self.logger.warning(f"⚠️ [跳过止盈单] 计算后数量为0")
-                return
-
-            # 挂限价止盈单（不使用 reduceOnly，因为单向持仓模式下可能与已有挂单冲突）
-            order = self.exchange.place_order(
-                symbol=config.SYMBOL,
-                side=close_side,
-                order_type='LIMIT',
-                quantity=float(tp_contracts),
-                price=tp_price,
-                business_order_type='TP',  # 业务类型：止盈
-                trace_id=pos.trace_id,  # 使用持仓的 trace_id
-                kline_close_time=str(ts) if ts else ''  # 使用K线时间
-            )
-
-            pos.tp_order_id = order.order_id
-            pos.tp_order_level = max_level_idx
-            pos.tp_order_contracts = tp_contracts
-
-            self.logger.info(
-                f"✓ 止盈单已挂 | ID={order.order_id} | "
-                f"状态={order.status.value}"
-            )
-
-            # 限价单可能立即成交（虽然概率很小）
-            if order.status.value == 'FILLED':
-                self.logger.warning(f"⚠️ 止盈单立即成交 @ {order.avg_price:.2f}")
-                self._close_position_after_tp(pos, order.avg_price, max_level_idx)
-
-        except Exception as e:
-            self.logger.error(f"❌ [挂止盈单失败] {e}", exc_info=True)
-
-    def update_tp_order(self, pos: Position, ts=None):
-        """
-        持仓变化时调整止盈订单
-
-        逻辑:
-        1. 检查当前持仓数量
-        2. 如果持仓为0，撤销止盈单
-        3. 如果持仓变化，调整止盈单数量
-        4. 如果止盈单不存在，重新挂单
-
-        Args:
-            pos: 持仓对象
-            ts: 当前K线时间戳
-        """
-        # 检查是否需要处理止盈单
-        if not config.TP_LEVELS:
-            return
 
     def sync_external_fills(self):
         """
@@ -1215,401 +1064,7 @@ class TradeEngine:
 
         return
 
-        current_contracts = pos.contracts
 
-        # 情况1: 持仓为0，撤销止盈单
-        if current_contracts == 0:
-            if pos.tp_order_id:
-                self.logger.info(f"🔕 [撤销止盈单] 持仓为0，撤销止盈单 {pos.tp_order_id}")
-                try:
-                    self.exchange.cancel_order(config.SYMBOL, pos.tp_order_id)
-                    pos.tp_order_id = None
-                    pos.tp_order_level = 0
-                    pos.tp_order_contracts = 0
-                except Exception as e:
-                    self.logger.error(f"❌ [撤销止盈单失败] {e}")
-            return
-
-        # 情况2: 止盈单不存在
-        # 新策略：不再预先挂止盈单，由 apply_take_profit 实时处理
-        if not pos.tp_order_id:
-            # self.logger.warning(f"⚠️ 止盈单不存在，重新挂单")
-            # self._place_initial_tp_order(pos, ts)
-            return
-
-        # 情况3: 持仓数量变化，调整止盈单
-        if current_contracts != pos.tp_order_contracts:
-            self.logger.info(
-                f"🔄 [调整止盈单] 持仓变化: "
-                f"{pos.tp_order_contracts} → {current_contracts}张"
-            )
-
-            try:
-                # 撤销旧止盈单
-                self.exchange.cancel_order(config.SYMBOL, pos.tp_order_id)
-
-                # 验证交易所实际持仓
-                exchange_pos = self.exchange.get_position(config.SYMBOL)
-                if not exchange_pos:
-                    self.logger.warning(f"⚠️ [跳过更新止盈单] 交易所端无持仓")
-                    pos.tp_order_id = None
-                    pos.tp_order_contracts = 0
-                    return
-                
-                exchange_qty = abs(float(exchange_pos.get('position_amount', 0)))
-                if exchange_qty <= 0:
-                    self.logger.warning(f"⚠️ [跳过更新止盈单] 交易所持仓数量为0")
-                    pos.tp_order_id = None
-                    pos.tp_order_contracts = 0
-                    return
-                
-                # 使用交易所实际持仓数量
-                actual_contracts = min(current_contracts, int(exchange_qty))
-                if actual_contracts <= 0:
-                    self.logger.warning(f"⚠️ [跳过更新止盈单] 计算后数量为0")
-                    pos.tp_order_id = None
-                    pos.tp_order_contracts = 0
-                    return
-
-                # 重新计算止盈价格和数量
-                tp_levels = list(config.TP_LEVELS)
-                max_level_idx = len(tp_levels) - 1
-                max_level = tp_levels[max_level_idx]
-
-                ref_price = pos.benchmark_price if pos.benchmark_price else pos.entry_price
-
-                if max_level < 1:
-                    pts = round(ref_price * max_level, 1)
-                elif max_level >= 1 and max_level < 2:
-                    pts = round(ref_price * (max_level - 1), 1)
-                else:
-                    pts = max_level
-
-                tp_price = round(ref_price + pts, 1) if pos.side == 'long' else round(ref_price - pts, 1)
-
-                close_side = 'SELL' if pos.side == 'long' else 'BUY'
-
-                # 挂新的止盈单
-                order = self.exchange.place_order(
-                    symbol=config.SYMBOL,
-                    side=close_side,
-                    order_type='LIMIT',
-                    quantity=float(actual_contracts),
-                    price=tp_price,
-                    business_order_type='TP',  # 业务类型：止盈
-                    trace_id=pos.trace_id,  # 使用持仓的 trace_id
-                    kline_close_time=str(ts) if ts else ''  # 使用K线时间
-                )
-
-                pos.tp_order_id = order.order_id
-                pos.tp_order_contracts = actual_contracts
-
-                self.logger.info(
-                    f"✓ 止盈单已更新 | ID={order.order_id} | "
-                    f"数量={actual_contracts}张 | 价格={tp_price:.2f}"
-                )
-
-            except Exception as e:
-                self.logger.error(f"❌ [调整止盈单失败] {e}", exc_info=True)
-
-    def _check_tp_order_status(self, pos: Position, ts=None) -> bool:
-        """
-        检查止盈单状态（在K线更新时调用）
-
-        Args:
-            pos: 持仓对象
-            ts: 当前K线时间戳
-
-        Returns:
-            bool: 止盈单是否成交
-        """
-        if not pos.tp_order_id:
-            return False
-
-        try:
-            order = self.exchange.get_order(config.SYMBOL, pos.tp_order_id)
-
-            if order.status.value == 'FILLED':
-                # 止盈单成交
-                self.logger.info(f"✅ 止盈单成交 | 订单ID={pos.tp_order_id} | 价格={order.avg_price:.2f}")
-                tp_level = pos.tp_order_level
-                self._close_position_after_tp(pos, order.avg_price, tp_level)
-                return True
-
-            elif order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
-                # 止盈单失效，由 apply_take_profit 重新处理
-                self.logger.warning(f"⚠️ 止盈单{order.status.value}")
-                pos.tp_order_id = None
-                # self._place_initial_tp_order(pos, ts)
-                return False
-
-            # NEW状态，继续等待
-            return False
-
-        except Exception as e:
-            self.logger.error(f"❌ [查询止盈单失败] {e}", exc_info=True)
-            return False
-
-    def _close_position_after_tp(self, pos: Position, price: float, level_idx: int):
-        """
-        止盈平仓后的清理工作
-
-        Args:
-            pos: 持仓对象
-            price: 成交价格
-            level_idx: 止盈级别索引
-        """
-        # 计算盈亏
-        cn = config.CONTRACT_NOTIONAL
-        notional_usd = cn * pos.contracts
-
-        if pos.side == 'long':
-            gross_pnl_btc = notional_usd * (1 / pos.entry_price - 1 / price)
-        else:  # short
-            gross_pnl_btc = notional_usd * (1 / price - 1 / pos.entry_price)
-
-        fee_rate = config.TAKER_FEE_RATE
-        fee_btc = (notional_usd * fee_rate) / price
-        net_btc = gross_pnl_btc - fee_btc
-
-        # 更新已实现盈亏
-        self.realized_pnl += net_btc
-
-        # 标记止盈级别
-        tp_levels = list(config.TP_LEVELS)
-        if level_idx < len(tp_levels):
-            pos.tp_hit.append(tp_levels[level_idx])
-        pos.tp_activated = True
-        pos.tp_hit_value = price
-
-        # 记录日志
-        ts = pd.Timestamp.now()
-        self.record_log(
-            ts,
-            'TAKE_PROFIT',
-            pos.side,
-            price,
-            pos.contracts,
-            gross_pnl_btc,
-            f"止盈级别={level_idx + 1}",
-            fee_rate,
-            fee_btc * price
-        )
-
-        # 关闭持仓
-        self.close_position(pos, ts, price, 'take_profit', net_btc, pnl_already_applied=True)
-
-    def monitor_tp_levels_and_drawdown(self, pos: Position, ts: pd.Timestamp,
-                                       price: float, high: float, low: float,
-                                       row: Dict) -> bool:
-        """
-        监控止盈级别并调整基准价，检测回撤并挂单
-
-        完整流程:
-        1. 检测价格是否到达新的止盈级别
-        2. 如果到达，调整benchmark_price（不做仓位操作）
-        3. 检测收盘价是否触发回撤（基准价 * 回撤百分比）
-        4. 如果触发回撤，挂限价止盈回撤单
-
-        Args:
-            pos: 持仓对象
-            ts: 当前时间
-            price: 当前价格
-            high: 最高价
-            low: 最低价
-            row: K线数据
-
-        Returns:
-            bool: 是否平仓（回撤成交）
-        """
-        if not config.TP_LEVELS:
-            return False
-
-        if config.DRAWDOWN_POINTS <= 0:
-            return False
-
-        # 使用high/low检测止盈级别（实时监控）
-        ref_high = high if high is not None else price
-        ref_low = low if low is not None else price
-
-        # 使用benchmark_price作为基准（初始是entry_price，达到止盈后更新）
-        ref_price = pos.benchmark_price if pos.benchmark_price else pos.entry_price
-
-        tp_levels = list(config.TP_LEVELS)
-        max_level_reached = None
-
-        # ============================================================
-        # 步骤1: 检测是否到达新的止盈级别
-        # ============================================================
-        for idx, lvl in enumerate(tp_levels):
-            # 跳过已触发的级别
-            if lvl in pos.tp_hit:
-                continue
-
-            # 计算目标价格
-            if lvl < 1:
-                pts = round(ref_price * lvl, 1)
-            elif lvl >= 1 and lvl < 2:
-                pts = round(ref_price * (lvl - 1), 1)
-            else:
-                pts = lvl
-
-            target_price = round(ref_price + pts, 1) if pos.side == 'long' else round(ref_price - pts, 1)
-
-            # 检测是否触发（使用实时high/low）
-            triggered = False
-            if pos.side == 'long':
-                if ref_high >= target_price:
-                    triggered = True
-            else:  # short
-                if ref_low <= target_price:
-                    triggered = True
-
-            if triggered:
-                # ============================================================
-                # 步骤2: 到达止盈级别，调整基准价（不做仓位操作）
-                # ============================================================
-                max_level_reached = lvl
-
-                # 更新基准价格为当前目标价格
-                pos.benchmark_price = target_price
-                pos.tp_hit_value = target_price
-                pos.tp_hit.append(lvl)
-                pos.tp_activated = True
-                pos.up_once = True
-
-                self.logger.info("=" * 80)
-                self.logger.info(f"📈 [止盈级别触发] 持仓ID: {pos.id}")
-                self.logger.info(f"级别: {idx + 1}/{len(tp_levels)} ({lvl})")
-                self.logger.info(f"目标价: {target_price:.2f}")
-                self.logger.info(f"实时价格: {price:.2f}")
-                self.logger.info(f"基准价调整: {ref_price:.2f} → {target_price:.2f}")
-                self.logger.info("=" * 80)
-
-                # 记录日志（不平仓）
-                self.record_log(
-                    ts,
-                    'TP_LEVEL_HIT',
-                    pos.side,
-                    price,
-                    pos.contracts,
-                    0,  # 不平仓，盈亏为0
-                    f"止盈级别{idx + 1}触发 基准价调整至{target_price:.2f}"
-                )
-
-                # 只触发最高级别（后续会继续监控）
-                break
-
-        # ============================================================
-        # 步骤3: 如果止盈已激活，检测回撤
-        # ============================================================
-        if not pos.tp_activated:
-            return False
-
-        # 使用收盘价检测回撤
-        close_price = row.get('close', price)
-
-        # 计算回撤价格
-        pprice = round(pos.tp_hit_value, 1)
-        dd = round(
-            config.DRAWDOWN_POINTS if config.DRAWDOWN_POINTS > 1
-            else round(pprice * config.DRAWDOWN_POINTS, 1)
-        )
-
-        if pos.side == 'long':
-            # 多头: 回撤价 = 基准价 - 回撤点
-            drawdown_price = round(pprice - dd, 1)
-            triggered_drawdown = close_price <= drawdown_price
-        else:  # short
-            # 空头: 回撤价 = 基准价 + 回撤点
-            drawdown_price = round(pprice + dd, 1)
-            triggered_drawdown = close_price >= drawdown_price
-
-        if triggered_drawdown:
-            # ============================================================
-            # 步骤4: 触发回撤，挂限价止盈回撤单
-            # ============================================================
-            return self._place_drawdown_order(pos, ts, close_price, drawdown_price)
-
-        return False
-
-    def _place_drawdown_order(self, pos: Position, ts: pd.Timestamp,
-                              close_price: float, drawdown_price: float) -> bool:
-        """
-        挂止盈回撤订单（限价单）
-
-        使用分钟收盘价挂单
-
-        Args:
-            pos: 持仓对象
-            ts: 当前时间
-            close_price: 分钟收盘价
-            drawdown_price: 回撤触发价
-
-        Returns:
-            bool: 是否成交平仓
-        """
-        close_side = 'SELL' if pos.side == 'long' else 'BUY'
-
-        self.logger.info("=" * 80)
-        self.logger.info(f"📉 [回撤触发] 持仓ID: {pos.id}")
-        self.logger.info(f"基准价: {pos.tp_hit_value:.2f}")
-        self.logger.info(f"回撤价: {drawdown_price:.2f}")
-        self.logger.info(f"收盘价: {close_price:.2f}")
-        self.logger.info(f"挂单价: {close_price:.2f}")
-        self.logger.info("=" * 80)
-
-        try:
-            # 先撤销可能冲突的同方向挂单
-            try:
-                open_orders = self.exchange.get_open_orders(config.SYMBOL)
-                if open_orders:
-                    for existing_order in open_orders:
-                        if existing_order.side.value == close_side:
-                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
-                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
-            except Exception as e:
-                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
-            
-            # 使用收盘价挂限价单
-            order = self.exchange.place_order(
-                symbol=config.SYMBOL,
-                side=close_side,
-                order_type='LIMIT',
-                quantity=float(pos.contracts),
-                price=close_price,
-                business_order_type='CLOSE_RETREAT',  # 业务类型：回撤平仓
-                trace_id=pos.trace_id,  # 使用持仓的 trace_id
-                kline_close_time=str(ts)  # 使用当前K线时间
-            )
-
-            self.logger.info(
-                f"📋 [回撤单已挂] ID={order.order_id} | "
-                f"状态={order.status.value} | 价格={close_price:.2f}"
-            )
-
-            # 检查订单状态
-            if order.status.value == 'FILLED':
-                # 立即成交
-                self.logger.info(f"✅ 回撤单立即成交 @ {order.avg_price:.2f}")
-                self._close_position_after_drawdown(pos, ts, close_price, drawdown_price)
-                return True
-
-            elif order.status.value == 'EXPIRED':
-                # 未成交，使用市价单
-                self.logger.warning(f"⚠️ 回撤单超时，使用市价单")
-                return self._market_close_for_drawdown(pos, ts, close_price)
-
-            else:
-                # NEW状态，查询后续状态
-                # 这里简化处理：如果没立即成交，使用市价单
-                self.logger.warning(f"⏳ 回撤单未立即成交，使用市价单确保平仓")
-                return self._market_close_for_drawdown(pos, ts, close_price)
-
-        except Exception as e:
-            self.logger.error(f"❌ [回撤单异常] {e}", exc_info=True)
-            # 异常情况，使用市价单平仓
-            return self._market_close_for_drawdown(pos, ts, close_price)
 
     def _close_position_after_drawdown(self, pos: Position, ts: pd.Timestamp,
                                        price: float, drawdown_price: float):
@@ -1685,7 +1140,21 @@ class TradeEngine:
                             self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
             except Exception as e:
                 self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
-            
+
+            # 查询实际持仓余额，如果没有持仓则不下单
+            try:
+                position_info = self.exchange.get_position(config.SYMBOL)
+                if position_info is None:
+                    self.logger.warning(f"⚠️ [回撤市价平仓] 查询持仓为空，跳过平仓订单")
+                    return False
+                position_amt = abs(position_info.get('position_amount', 0))
+                if position_amt <= 0:
+                    self.logger.warning(f"⚠️ [回撤市价平仓] 持仓余额为0，跳过平仓订单")
+                    return False
+            except Exception as e:
+                self.logger.error(f"❌ [回撤市价平仓] 查询持仓失败: {e}")
+                # 查询失败时仍然允许下单，保持原有行为
+
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
                 side=close_side,
@@ -1698,8 +1167,13 @@ class TradeEngine:
             )
 
             if order.status.value == 'FILLED':
-                self.logger.info(f"✅ 市价单成交 @ {order.avg_price:.2f}")
-                self._close_position_after_drawdown(pos, ts, order.avg_price, order.avg_price)
+                # 轮询查询真实成交价格
+                actual_price = self._poll_close_order_price(
+                    order.order_id,
+                    fallback_price=order.avg_price if order.avg_price > 0 else price
+                )
+                self.logger.info(f"✅ 市价单成交 @ {actual_price:.2f}")
+                self._close_position_after_drawdown(pos, ts, actual_price, actual_price)
                 return True
             else:
                 self.logger.error(f"❌ 市价单失败: {order.status.value}")
@@ -2073,6 +1547,20 @@ class TradeEngine:
             f"🚨 [止盈市价平仓] {close_side} @ 市价 | 数量={pos.contracts}张"
         )
 
+        # 查询实际持仓余额，如果没有持仓则不下单
+        try:
+            position_info = self.exchange.get_position(config.SYMBOL)
+            if position_info is None:
+                self.logger.warning(f"⚠️ [止盈市价平仓] 查询持仓为空，跳过平仓订单")
+                return False
+            position_amt = abs(position_info.get('position_amount', 0))
+            if position_amt <= 0:
+                self.logger.warning(f"⚠️ [止盈市价平仓] 持仓余额为0，跳过平仓订单")
+                return False
+        except Exception as e:
+            self.logger.error(f"❌ [止盈市价平仓] 查询持仓失败: {e}")
+            # 查询失败时仍然允许下单，保持原有行为
+
         try:
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
@@ -2086,7 +1574,11 @@ class TradeEngine:
             )
 
             if order.status.value == 'FILLED':
-                actual_price = order.avg_price if order.avg_price > 0 else price
+                # 轮询查询真实成交价格
+                actual_price = self._poll_close_order_price(
+                    order.order_id,
+                    fallback_price=order.avg_price if order.avg_price > 0 else price
+                )
                 self.logger.info(f"✅ 止盈市价单成交 @ {actual_price:.2f}")
 
                 # 计算盈亏
@@ -2269,6 +1761,94 @@ class TradeEngine:
 
         return False
 
+    def _poll_close_order_price(self, order_id: str, fallback_price: float) -> float:
+        """
+        轮询查询平仓单成交价格
+
+        市价单下单后，轮询查询订单状态获取真实的成交价格，
+        避免使用下单接口返回的预估价格。
+
+        Args:
+            order_id: 订单ID
+            fallback_price: 回退价格（查询失败时使用）
+
+        Returns:
+            float: 成交价格，查询失败时返回 fallback_price
+        """
+        timeout = 60  # 60秒超时
+        poll_interval = 0.5  # 每次轮询间隔秒数
+        start_time = time.time()
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # 检查超时
+            if elapsed >= timeout:
+                self.logger.error(f"❌ [查询订单] 轮询超时({timeout}秒)，订单未成交")
+                # 发送飞书告警
+                try:
+                    self.feishu_bot.send_message(
+                        f"⚠️ 平仓订单查询超时\n"
+                        f"订单ID: {order_id}\n"
+                        f"超时时间: {timeout}秒\n"
+                        f"使用fallback价格: ${fallback_price:.2f}"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"飞书告警发送失败: {e}")
+                return fallback_price
+
+            try:
+                queried_order = self.exchange.get_order(config.SYMBOL, order_id)
+                if queried_order is None:
+                    self.logger.warning(f"⚠️ [查询订单] 返回None，已轮询{elapsed:.1f}秒")
+                    time.sleep(poll_interval)
+                    continue
+
+                self.logger.debug(
+                    f"📊 [查询订单] ID={order_id} | "
+                    f"状态={queried_order.status.value} | "
+                    f"avg_price={queried_order.avg_price:.2f} | "
+                    f"filled_qty={queried_order.filled_quantity} | "
+                    f"已轮询{elapsed:.1f}秒"
+                )
+
+                # 订单已完全成交
+                if queried_order.status.value == 'FILLED':
+                    if queried_order.avg_price > 0:
+                        self.logger.info(
+                            f"✅ [查询订单] 获取真实成交价: {queried_order.avg_price:.2f} | 耗时{elapsed:.1f}秒"
+                        )
+                        return queried_order.avg_price
+                    else:
+                        self.logger.warning(
+                            f"⚠️ [查询订单] FILLED但avg_price=0，使用fallback价格 | 耗时{elapsed:.1f}秒"
+                        )
+                        return fallback_price
+
+                # 订单部分成交，使用已成交部分的均价
+                elif queried_order.status.value == 'PARTIALLY_FILLED':
+                    if queried_order.avg_price > 0:
+                        self.logger.info(
+                            f"📊 [查询订单] 部分成交，使用部分均价: {queried_order.avg_price:.2f} | 耗时{elapsed:.1f}秒"
+                        )
+                        return queried_order.avg_price
+
+                # 订单被拒绝/取消，使用fallback价格
+                elif queried_order.status.value in ['REJECTED', 'CANCELED', 'EXPIRED']:
+                    self.logger.warning(
+                        f"⚠️ [查询订单] 订单{queried_order.status.value}，使用fallback价格 | 耗时{elapsed:.1f}秒"
+                    )
+                    return fallback_price
+
+                # 其他状态继续轮询
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                self.logger.warning(
+                    f"⚠️ [查询订单] 异常(已轮询{elapsed:.1f}秒): {e}"
+                )
+                time.sleep(poll_interval)
+
     def _market_tp_close(
         self, pos: Position, ts: pd.Timestamp,
         sum_qty: int, lvl: float, idx: int, cn: float
@@ -2289,6 +1869,20 @@ class TradeEngine:
         """
         close_side = 'SELL' if pos.side == 'long' else 'BUY'
 
+        # 先查询实际持仓余额，如果没有持仓则不下单
+        try:
+            position_info = self.exchange.get_position(config.SYMBOL)
+            if position_info is None:
+                self.logger.warning(f"⚠️ [止盈平仓] 查询持仓为空，跳过平仓订单")
+                return False
+            position_amt = abs(position_info.get('position_amount', 0))
+            if position_amt <= 0:
+                self.logger.warning(f"⚠️ [止盈平仓] 持仓余额为0，跳过平仓订单")
+                return False
+        except Exception as e:
+            self.logger.error(f"❌ [止盈平仓] 查询持仓失败: {e}")
+            # 查询失败时仍然允许下单，保持原有行为
+
         self.logger.warning(
             f"🚨 [市价止盈] {close_side} @ 市价 | 数量={sum_qty}张"
         )
@@ -2306,7 +1900,11 @@ class TradeEngine:
             )
 
             if order.status.value == 'FILLED':
-                actual_price = order.avg_price
+                # 轮询查询真实成交价格
+                actual_price = self._poll_close_order_price(
+                    order.order_id,
+                    fallback_price=order.avg_price if order.avg_price > 0 else lvl
+                )
                 self._process_tp_fill(pos, ts, actual_price, sum_qty, lvl, idx, cn)
                 if pos.contracts <= 0:
                     return True
@@ -2710,7 +2308,21 @@ class TradeEngine:
                             self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
             except Exception as e:
                 self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
-            
+
+            # 查询实际持仓余额，如果没有持仓则不下单
+            try:
+                position_info = self.exchange.get_position(config.SYMBOL)
+                if position_info is None:
+                    self.logger.warning(f"⚠️ [市价平仓] 查询持仓为空，跳过平仓订单 | 原因={reason}")
+                    return False
+                position_amt = abs(position_info.get('position_amount', 0))
+                if position_amt <= 0:
+                    self.logger.warning(f"⚠️ [市价平仓] 持仓余额为0，跳过平仓订单 | 原因={reason}")
+                    return False
+            except Exception as e:
+                self.logger.error(f"❌ [市价平仓] 查询持仓失败: {e}")
+                # 查询失败时仍然允许下单，保持原有行为
+
             # 使用市价单
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
@@ -2725,8 +2337,13 @@ class TradeEngine:
             )
 
             if order.status.value == 'FILLED':
-                self.logger.info(f"✅ 市价单成交 @ {order.avg_price:.2f}")
-                self._close_position_after_sl(pos, ts, order.avg_price, reason)
+                # 轮询查询真实成交价格
+                actual_price = self._poll_close_order_price(
+                    order.order_id,
+                    fallback_price=order.avg_price if order.avg_price > 0 else price
+                )
+                self.logger.info(f"✅ 市价单成交 @ {actual_price:.2f}")
+                self._close_position_after_sl(pos, ts, actual_price, reason)
                 return True
             else:
                 self.logger.error(f"❌ 市价单失败: {order.status.value}")
@@ -2885,7 +2502,8 @@ class TradeEngine:
                 current_price=close_price,
                 highest_tp_level=pos.tp_level_reached,
                 pullback_price=pos.tp_drawdown_price,
-                unrealized_pnl=unrealized_usd
+                unrealized_pnl=unrealized_usd,
+                contracts=pos.contracts
             )
         except Exception as e:
             self.logger.warning(f"飞书止盈回撤通知发送失败: {e}")
