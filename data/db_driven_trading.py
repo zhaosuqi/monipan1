@@ -110,12 +110,16 @@ class DBDrivenTrader:
     
     def _init_exchange(self):
         """初始化交易所连接"""
-        # 设置环境变量以使用测试网
+        # 设置环境变量以使用测试网或实盘
         if self.use_testnet:
             os.environ['BINANCE_TESTNET'] = '1'
             os.environ['EXCHANGE_TYPE'] = 'binance_testnet'
-            os.environ['DB_SIM_MODE'] = '0'
-            os.environ['REPLAY_MODE'] = '0'
+        else:
+            os.environ['BINANCE_TESTNET'] = '0'
+            os.environ['EXCHANGE_TYPE'] = 'binance_live'
+        # 无论测试网还是实盘，都关闭回测模式
+        os.environ['DB_SIM_MODE'] = '0'
+        os.environ['REPLAY_MODE'] = '0'
 
         # 环境变量修改后需要刷新 config，否则 TradeEngine 会继续读取默认回测配置
         try:
@@ -123,8 +127,16 @@ class DBDrivenTrader:
             self.logger.info("已刷新配置，交易所将按最新环境变量选择")
         except Exception as e:  # pragma: no cover - 防御性日志
             self.logger.warning(f"刷新配置失败: {e}")
-        
-        self.logger.info(f"交易所类型: {os.environ.get('EXCHANGE_TYPE', 'auto')}")
+
+        # 调试：打印配置值
+        self.logger.info(f"=== 配置调试 ===")
+        self.logger.info(f"  EXCHANGE_TYPE: {config.EXCHANGE_TYPE}")
+        self.logger.info(f"  BINANCE_TESTNET: {config.BINANCE_TESTNET}")
+        self.logger.info(f"  DB_SIM_MODE: {config.DB_SIM_MODE}")
+        self.logger.info(f"  REPLAY_MODE: {config.REPLAY_MODE}")
+        self.logger.info(f"  os.EXCHANGE_TYPE: {os.environ.get('EXCHANGE_TYPE', 'None')}")
+        self.logger.info(f"  use_testnet: {self.use_testnet}")
+        self.logger.info(f"==================")
         
         # 余额同步相关
         self.last_balance_sync = 0  # 上次同步时间戳
