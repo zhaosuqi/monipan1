@@ -31,6 +31,27 @@ from sqlalchemy import create_engine, text
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 在 import config 之前加载 .env 文件
+def _load_env_file():
+    """加载 .env 文件到环境变量"""
+    env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+    if os.path.exists(env_file):
+        with open(env_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # 跳过注释和空行
+                if not line or line.startswith('#'):
+                    continue
+                # 解析 KEY=VALUE 格式
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+        print(f"已加载 .env 文件: {env_file}")
+    else:
+        print(f"警告: .env 文件不存在: {env_file}")
+
+_load_env_file()
+
 from core.config import config
 from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
