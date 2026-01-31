@@ -51,6 +51,8 @@ def create_exchange(
         # 实盘使用实盘密钥，如果没有则回退到通用密钥
         api_key = config.BINANCE_LIVE_API_KEY or config.BINANCE_API_KEY
         api_secret = config.BINANCE_LIVE_API_SECRET or config.BINANCE_API_SECRET
+        logger.info(f"实盘 API Key: {api_key[:8]}... (长度: {len(api_key)})")
+        logger.info(f"实盘 API Secret: {api_secret[:8]}... (长度: {len(api_secret)})")
         exchange = BinanceExchange(
             api_key=api_key,
             api_secret=api_secret,
