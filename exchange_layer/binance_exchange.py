@@ -13,6 +13,7 @@ from binance.error import ParameterRequiredError
 from core.logger import get_logger
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
+from interaction_module.feishu_bot import FeishuBot
 
 from .base_exchange import BaseExchange
 from .models import (AccountInfo, Kline, Order, OrderSide, OrderStatus,
@@ -31,9 +32,12 @@ class BinanceExchange(BaseExchange):
         self.logger = get_logger('exchange_layer.binance')
         self.client: Optional[CMFutures] = None
         self.hedge_mode = False  # 是否为双向持仓模式
-        
+
         # 本地订单管理器
         self.local_order_manager = LocalOrderManager()
+
+        # 飞书通知
+        self.feishu_bot = FeishuBot()
 
     def connect(self) -> bool:
         """连接到币安交易所"""
@@ -76,6 +80,15 @@ class BinanceExchange(BaseExchange):
         except Exception as e:
             self.logger.error(f"币安交易所连接失败: {e}", exc_info=True)
             self.connected = False
+
+            # 发送飞书通知
+            mode = "测试网" if self.testnet else "实盘"
+            self.feishu_bot.send_binance_error_notification(
+                error_message=str(e),
+                error_type="连接异常",
+                mode=mode
+            )
+
             return False
 
     def disconnect(self):

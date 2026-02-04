@@ -746,6 +746,70 @@ class FeishuBot:
 
         return self._send_rich_card(card)
 
+    def send_binance_error_notification(
+        self,
+        error_message: str,
+        error_type: str = "连接异常",
+        mode: str = "实盘"
+    ) -> bool:
+        """
+        发送币安接口异常通知
+
+        Args:
+            error_message: 错误信息
+            error_type: 错误类型 (连接异常/下单失败/查询失败等)
+            mode: 运行模式 (实盘/测试网)
+        """
+        mode_color = "red" if mode == "实盘" else "orange"
+        mode_icon = "🔴" if mode == "实盘" else "🧪"
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"币安接口异常 ⚠️ - {error_type}",
+                    "tag": "plain_text"
+                },
+                "template": mode_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**运行模式**\n{mode_icon} {mode}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**错误类型**\n{error_type}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**错误信息**\n{error_message}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发生时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
     def send_sync_close_notification(
         self,
         symbol: str,
