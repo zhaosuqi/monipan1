@@ -191,6 +191,87 @@ class TradeEngine:
         return self.open_position(ts, price, row, side, reason)
 
     # ------------------ 远端订单巡检与反向同步 ------------------
+    def sync_positions_from_exchange(self, ts: pd.Timestamp, price: float) -> bool:
+        """
+        从交易所同步持仓到本地，以交易所为准（单向持仓模式）
+        
+        返回:
+            bool: 是否有变化
+        """
+        try:
+            pos_info = self.exchange.get_position(config.SYMBOL)
+        except Exception as fetch_err:
+            self.logger.warning(f"同步持仓失败(get_position): {fetch_err}")
+            return False
+            
+        # 解析交易所持仓
+        remote_amt = float(pos_info.get('position_amount', 0)) if pos_info else 0
+        
+        # 交易所无持仓
+        if remote_amt == 0:
+            if self.positions:
+                old_positions = [(p.side, p.entry_price, p.contracts) for p in self.positions]
+                self.logger.warning(
+                    f"🔄 持仓同步: 交易所无持仓，清除本地持仓 | "
+                    f"清除: {old_positions}"
+                )
+                self.positions.clear()
+                return True
+            return False
+        
+        # 交易所有持仓
+        remote_side = 'long' if remote_amt > 0 else 'short'
+        remote_contracts = abs(int(remote_amt))
+        remote_entry = float(pos_info.get('entry_price', 0)) or price
+        
+        # 检查本地持仓是否与交易所一致
+        if len(self.positions) == 1:
+            local_pos = self.positions[0]
+            if (local_pos.side == remote_side and 
+                local_pos.contracts == remote_contracts and
+                abs(local_pos.entry_price - remote_entry) < 0.01):
+                # 完全一致，无需处理
+                return False
+        
+        # 不一致，用交易所持仓替换本地
+        old_positions = [(p.side, p.entry_price, p.contracts) for p in self.positions]
+        
+        # 清空本地
+        self.positions.clear()
+        
+        # 从交易所创建新的本地持仓
+        cn = config.CONTRACT_NOTIONAL
+        qty_per_contract = cn / remote_entry if remote_entry > 0 else 0
+        trace_id = str(uuid.uuid4())
+        
+        new_pos = Position(
+            id=str(uuid.uuid4()),
+            side=remote_side,
+            entry_price=remote_entry,
+            entry_time=ts,
+            contracts=remote_contracts,
+            entry_contracts=remote_contracts,
+            contract_size_btc=qty_per_contract,
+            tp_hit=[],
+            tp_activated=False,
+            tp_hit_value=0.0,
+            trace_id=trace_id,
+            benchmark_price=remote_entry,
+            entry_hist4=None,
+            entry_dif4=None,
+            entry_hist1h=None,
+            entry_hist15=None,
+        )
+        
+        self.positions.append(new_pos)
+        
+        self.logger.warning(
+            f"🔄 持仓同步: 本地与交易所不一致，已同步 | "
+            f"交易所: {remote_side}@{remote_entry:.2f} x{remote_contracts} | "
+            f"原本地: {old_positions}"
+        )
+        return True
+
     def _maybe_sync_remote_orders(self, ts: pd.Timestamp, price: float):
         """定期从交易所拉取订单与持仓，补充本地状态"""
         if self.order_sync_interval <= 0:
@@ -227,8 +308,8 @@ class TradeEngine:
                         getattr(od, 'filled_quantity', 0.0) or 0.0,
                     )
 
-            # 反向同步持仓/订单
-            self._backfill_position_from_exchange(ts, price)
+            # 同步持仓（以交易所为准，已在 process_tick 中调用，这里作为后台补充）
+            self.sync_positions_from_exchange(ts, price)
             # 同步可能由其它渠道平仓的情况
             try:
                 self.sync_external_fills()
@@ -543,16 +624,58 @@ class TradeEngine:
                 return False  # 不创建持仓
 
             elif order.status.value == 'NEW':
-                # ⏳ 订单待成交（限价单可能）
+                # ⏳ 市价单返回NEW状态，需要轮询等待成交
                 self.logger.info(
                     f"⏳ [订单待成交] 订单 {order.order_id} 状态为NEW，"
-                    f"限价单已提交，等待后台撮合"
+                    f"市价单正在撮合中，开始轮询等待..."
                 )
-                # 未成交则不创建本地持仓
-                self.order_failed_count += 1
-                if not config.NO_LIMIT_POS:
-                    self.locked_capital = max(0.0, self.locked_capital - required_btc)
-                return False
+                # 轮询等待订单成交（市价单通常很快成交）
+                poll_timeout = 10  # 最多等待10秒
+                poll_interval = 0.5  # 每0.5秒查询一次
+                start_time = time.time()
+                final_status = None
+                final_order = None
+                
+                while time.time() - start_time < poll_timeout:
+                    try:
+                        queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
+                        if queried_order:
+                            self.logger.debug(
+                                f"📊 [轮询订单] ID={order.order_id} | "
+                                f"状态={queried_order.status.value} | "
+                                f"avg_price={queried_order.avg_price:.2f} | "
+                                f"filled_qty={queried_order.filled_quantity}"
+                            )
+                            if queried_order.status.value == 'FILLED':
+                                final_status = 'FILLED'
+                                final_order = queried_order
+                                break
+                            elif queried_order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                                final_status = queried_order.status.value
+                                break
+                    except Exception as poll_err:
+                        self.logger.warning(f"轮询订单状态异常: {poll_err}")
+                    time.sleep(poll_interval)
+                
+                if final_status == 'FILLED' and final_order:
+                    # ✅ 订单最终成交
+                    self.logger.info(f"✅ [订单成交] 订单 {order.order_id} 轮询确认已成交")
+                    self.order_success_count += 1
+                    actual_price = (
+                        final_order.avg_price if final_order.avg_price > 0
+                        else price
+                    )
+                    # 继续执行创建持仓的逻辑（跳到下面）
+                else:
+                    # ❌ 订单未能在规定时间内成交
+                    self.logger.warning(
+                        f"❌ [订单超时] 订单 {order.order_id} 在{poll_timeout}秒内未成交，"
+                        f"最终状态={final_status or 'UNKNOWN'}，放弃本次开仓"
+                    )
+                    self.order_failed_count += 1
+                    if not config.NO_LIMIT_POS:
+                        self.locked_capital = max(0.0, self.locked_capital - required_btc)
+                    return False
 
             else:
                 # 未知状态
@@ -1570,8 +1693,29 @@ class TradeEngine:
                 price=None,
                 business_order_type='TP',
                 trace_id=pos.trace_id,
-                kline_close_time=str(ts)
+                kline_close_time=str(ts),
+                reduceOnly=True  # 🔑 关键：确保是平仓操作，不会开反向仓
             )
+
+            # 如果市价单返回NEW状态，轮询等待成交
+            if order.status.value == 'NEW':
+                self.logger.info(f"⏳ [止盈平仓订单待成交] 订单 {order.order_id} 轮询等待...")
+                poll_timeout = 10
+                poll_interval = 0.5
+                start_time = time.time()
+                
+                while time.time() - start_time < poll_timeout:
+                    try:
+                        queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
+                        if queried_order and queried_order.status.value == 'FILLED':
+                            order = queried_order
+                            break
+                        elif queried_order and queried_order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                            order = queried_order
+                            break
+                    except Exception as poll_err:
+                        self.logger.warning(f"轮询止盈平仓订单状态异常: {poll_err}")
+                    time.sleep(poll_interval)
 
             if order.status.value == 'FILLED':
                 # 轮询查询真实成交价格
@@ -1896,8 +2040,29 @@ class TradeEngine:
                 price=None,
                 business_order_type='TP',
                 trace_id=pos.trace_id,
-                kline_close_time=str(ts)
+                kline_close_time=str(ts),
+                reduceOnly=True  # 🔑 关键：确保是平仓操作，不会开反向仓
             )
+
+            # 如果市价单返回NEW状态，轮询等待成交
+            if order.status.value == 'NEW':
+                self.logger.info(f"⏳ [市价止盈订单待成交] 订单 {order.order_id} 轮询等待...")
+                poll_timeout = 10
+                poll_interval = 0.5
+                start_time = time.time()
+                
+                while time.time() - start_time < poll_timeout:
+                    try:
+                        queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
+                        if queried_order and queried_order.status.value == 'FILLED':
+                            order = queried_order
+                            break
+                        elif queried_order and queried_order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                            order = queried_order
+                            break
+                    except Exception as poll_err:
+                        self.logger.warning(f"轮询市价止盈订单状态异常: {poll_err}")
+                    time.sleep(poll_interval)
 
             if order.status.value == 'FILLED':
                 # 轮询查询真实成交价格
@@ -2309,21 +2474,41 @@ class TradeEngine:
             except Exception as e:
                 self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
 
-            # 查询实际持仓余额，如果没有持仓则不下单
+            # 🔑 关键：查询交易所实际持仓，检查方向是否一致
             try:
                 position_info = self.exchange.get_position(config.SYMBOL)
                 if position_info is None:
-                    self.logger.warning(f"⚠️ [市价平仓] 查询持仓为空，跳过平仓订单 | 原因={reason}")
-                    return False
-                position_amt = abs(position_info.get('position_amount', 0))
-                if position_amt <= 0:
-                    self.logger.warning(f"⚠️ [市价平仓] 持仓余额为0，跳过平仓订单 | 原因={reason}")
-                    return False
+                    self.logger.warning(f"⚠️ [市价平仓] 查询持仓为空，清理本地虚假持仓 | 原因={reason}")
+                    self.positions.remove(pos)
+                    return True  # 返回True表示已处理
+                    
+                exchange_amt = float(position_info.get('position_amount', 0))
+                exchange_side = 'long' if exchange_amt > 0 else 'short' if exchange_amt < 0 else None
+                exchange_qty = abs(int(exchange_amt))
+                
+                self.logger.info(
+                    f"📊 [市价平仓前检查] 交易所持仓: {exchange_side} {exchange_qty}张 | "
+                    f"本地持仓: {pos.side} {pos.contracts}张"
+                )
+                
+                if exchange_qty <= 0:
+                    self.logger.warning(f"⚠️ [市价平仓] 交易所无持仓，清理本地虚假持仓 | 原因={reason}")
+                    self.positions.remove(pos)
+                    return True
+                    
+                if exchange_side != pos.side:
+                    self.logger.warning(
+                        f"⚠️ [市价平仓] 交易所持仓方向({exchange_side})与本地({pos.side})不符，"
+                        f"清理本地虚假持仓 | 原因={reason}"
+                    )
+                    self.positions.remove(pos)
+                    return True
+                    
             except Exception as e:
                 self.logger.error(f"❌ [市价平仓] 查询持仓失败: {e}")
                 # 查询失败时仍然允许下单，保持原有行为
 
-            # 使用市价单
+            # 使用市价单，添加reduceOnly确保是平仓而非开反向仓
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
                 side=close_side,
@@ -2333,8 +2518,29 @@ class TradeEngine:
                 current_time=ts,
                 business_order_type='SL',  # 业务类型：止损
                 trace_id=pos.trace_id,  # 使用持仓的 trace_id
-                kline_close_time=str(ts)  # 使用当前K线时间
+                kline_close_time=str(ts),  # 使用当前K线时间
+                reduceOnly=True  # 🔑 关键：确保是平仓操作，不会开反向仓
             )
+
+            # 如果市价单返回NEW状态，轮询等待成交
+            if order.status.value == 'NEW':
+                self.logger.info(f"⏳ [平仓订单待成交] 订单 {order.order_id} 轮询等待...")
+                poll_timeout = 10
+                poll_interval = 0.5
+                start_time = time.time()
+                
+                while time.time() - start_time < poll_timeout:
+                    try:
+                        queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
+                        if queried_order and queried_order.status.value == 'FILLED':
+                            order = queried_order
+                            break
+                        elif queried_order and queried_order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                            order = queried_order
+                            break
+                    except Exception as poll_err:
+                        self.logger.warning(f"轮询平仓订单状态异常: {poll_err}")
+                    time.sleep(poll_interval)
 
             if order.status.value == 'FILLED':
                 # 轮询查询真实成交价格
@@ -2511,6 +2717,42 @@ class TradeEngine:
         # 取消所有相关挂单
         self._cancel_all_related_orders(pos)
 
+        # 🔑 关键：先查询交易所实际持仓，确认本地持仓与交易所一致
+        try:
+            position_info = self.exchange.get_position(config.SYMBOL)
+            if position_info:
+                exchange_amt = float(position_info.get('position_amount', 0))
+                exchange_side = 'long' if exchange_amt > 0 else 'short' if exchange_amt < 0 else None
+                exchange_qty = abs(int(exchange_amt))
+                
+                self.logger.info(
+                    f"📊 [回撤平仓前检查] 交易所持仓: {exchange_side} {exchange_qty}张 | "
+                    f"本地持仓: {pos.side} {pos.contracts}张"
+                )
+                
+                # 如果交易所没有持仓，或者方向不一致，则清理本地状态不下单
+                if exchange_qty <= 0:
+                    self.logger.warning(
+                        f"⚠️ [回撤平仓] 交易所无持仓，清理本地虚假持仓 {pos.id}"
+                    )
+                    self.positions.remove(pos)
+                    return True  # 返回True表示处理完成
+                
+                if exchange_side != pos.side:
+                    self.logger.warning(
+                        f"⚠️ [回撤平仓] 交易所持仓方向({exchange_side})与本地({pos.side})不符，"
+                        f"清理本地虚假持仓 {pos.id}"
+                    )
+                    self.positions.remove(pos)
+                    return True  # 返回True表示处理完成
+            else:
+                self.logger.warning(f"⚠️ [回撤平仓] 查询交易所持仓为空，清理本地虚假持仓")
+                self.positions.remove(pos)
+                return True
+        except Exception as e:
+            self.logger.error(f"❌ [回撤平仓] 查询交易所持仓失败: {e}")
+            # 查询失败时继续尝试平仓
+
         # 市价全平
         close_side = 'SELL' if pos.side == 'long' else 'BUY'
 
@@ -2523,8 +2765,29 @@ class TradeEngine:
                 price=None,
                 business_order_type='CLOSE_RETREAT',
                 trace_id=pos.trace_id,
-                kline_close_time=str(ts)
+                kline_close_time=str(ts),
+                reduceOnly=True  # 🔑 关键：确保是平仓操作，不会开反向仓
             )
+
+            # 如果市价单返回NEW状态，轮询等待成交
+            if order.status.value == 'NEW':
+                self.logger.info(f"⏳ [回撤平仓订单待成交] 订单 {order.order_id} 轮询等待...")
+                poll_timeout = 10
+                poll_interval = 0.5
+                start_time = time.time()
+                
+                while time.time() - start_time < poll_timeout:
+                    try:
+                        queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
+                        if queried_order and queried_order.status.value == 'FILLED':
+                            order = queried_order
+                            break
+                        elif queried_order and queried_order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
+                            order = queried_order
+                            break
+                    except Exception as poll_err:
+                        self.logger.warning(f"轮询回撤平仓订单状态异常: {poll_err}")
+                    time.sleep(poll_interval)
 
             if order.status.value == 'FILLED':
                 actual_price = order.avg_price if order.avg_price > 0 else close_price
@@ -2658,8 +2921,14 @@ class TradeEngine:
         ts_str = str(ts)
         debug_mode = '03:44' in ts_str or '19:39' in ts_str or '19:44' in ts_str
 
-        # 定期巡检远端订单与持仓，保证本地与交易所一致
+        # 【核心】每次处理K线前，先从交易所同步持仓，以交易所为准
         current_price = row.get('price', row.get('close'))
+        try:
+            self.sync_positions_from_exchange(ts, current_price)
+        except Exception as sync_err:
+            self.logger.warning(f"持仓同步失败: {sync_err}")
+            
+        # 定期巡检远端订单（挂单状态等）
         try:
             self._maybe_sync_remote_orders(ts, current_price)
         except Exception as sync_err:

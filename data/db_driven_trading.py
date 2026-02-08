@@ -179,8 +179,9 @@ class DBDrivenTrader:
             self.available_balance = account_info.available_balance
             self.unrealized_pnl = account_info.unrealized_pnl
             
-            # 更新交易引擎的资金
-            self.trade_engine.realized_pnl = self.current_balance
+            # 更新交易引擎的资金 - 使用可用余额而非总余额
+            # 总余额包含了已占用的保证金，不能用于开仓
+            self.trade_engine.realized_pnl = self.available_balance
             
             self.logger.info(
                 f"💰 余额同步 | "
