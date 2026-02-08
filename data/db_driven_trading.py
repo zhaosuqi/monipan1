@@ -55,9 +55,9 @@ _load_env_file()
 from core.config import config
 from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
+from interaction_module.feishu_bot import FeishuBot
 from signal_module.signal_calculator import SignalCalculator
 from trade_module.trade_engine import TradeEngine
-from interaction_module.feishu_bot import FeishuBot
 
 logger = get_logger('data.db_driven_trading')
 

@@ -11,9 +11,9 @@ from binance.cm_futures import CMFutures
 from binance.error import ParameterRequiredError
 
 from core.logger import get_logger
+from interaction_module.feishu_bot import FeishuBot
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
-from interaction_module.feishu_bot import FeishuBot
 
 from .base_exchange import BaseExchange
 from .models import (AccountInfo, Kline, Order, OrderSide, OrderStatus,
@@ -342,6 +342,13 @@ class BinanceExchange(BaseExchange):
 
         except Exception as e:
             self.logger.error(f"下单失败: {e}", exc_info=True)
+            # 发送飞书通知
+            mode = "测试网" if self.testnet else "实盘"
+            self.feishu_bot.send_binance_error_notification(
+                error_message=f"{symbol} {side} {order_type} 数量={quantity} 价格={price}\n错误: {e}",
+                error_type="下单失败",
+                mode=mode
+            )
             # 返回一个被拒绝的订单
             return Order(
                 order_id='',
@@ -370,6 +377,13 @@ class BinanceExchange(BaseExchange):
             return True
         except Exception as e:
             self.logger.error(f"取消订单失败: {e}", exc_info=True)
+            # 发送飞书通知
+            mode = "测试网" if self.testnet else "实盘"
+            self.feishu_bot.send_binance_error_notification(
+                error_message=f"取消订单失败 {symbol} 订单ID={order_id}\n错误: {e}",
+                error_type="取消订单失败",
+                mode=mode
+            )
             return False
 
     def modify_order(
@@ -524,6 +538,13 @@ class BinanceExchange(BaseExchange):
             )
         except Exception as e:
             self.logger.error(f"获取账户信息失败: {e}", exc_info=True)
+            # 发送飞书通知
+            mode = "测试网" if self.testnet else "实盘"
+            self.feishu_bot.send_binance_error_notification(
+                error_message=f"查询 {asset} 账户余额失败\n错误: {e}",
+                error_type="查询账户失败",
+                mode=mode
+            )
             return AccountInfo(0, 0, 0)
 
     def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -568,6 +589,13 @@ class BinanceExchange(BaseExchange):
             return None
         except Exception as e:
             self.logger.error(f"获取持仓信息失败: {e}", exc_info=True)
+            # 发送飞书通知
+            mode = "测试网" if self.testnet else "实盘"
+            self.feishu_bot.send_binance_error_notification(
+                error_message=f"查询 {symbol} 持仓失败\n错误: {e}",
+                error_type="查询持仓失败",
+                mode=mode
+            )
             return None
 
     def get_user_trades(self, symbol: str, order_id: Optional[int] = None, limit: int = 500) -> List[Dict[str, Any]]:

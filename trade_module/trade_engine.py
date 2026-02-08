@@ -25,11 +25,11 @@ from core.config import config
 from core.logger import get_logger
 # 新增: 导入Exchange接口
 from exchange_layer import ExchangeType, create_exchange
+# 飞书通知
+from interaction_module.feishu_bot import FeishuBot
 from trade_module.account_tracker import AccountTracker
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
-# 飞书通知
-from interaction_module.feishu_bot import FeishuBot
 
 
 @dataclass
@@ -308,13 +308,12 @@ class TradeEngine:
                         getattr(od, 'filled_quantity', 0.0) or 0.0,
                     )
 
-            # 同步持仓（以交易所为准，已在 process_tick 中调用，这里作为后台补充）
-            self.sync_positions_from_exchange(ts, price)
-            # 同步可能由其它渠道平仓的情况
-            try:
-                self.sync_external_fills()
-            except Exception as e:
-                self.logger.warning(f"同步外部成交时出错: {e}")
+            # 同步持仓已在 process_tick 开头完成，这里不再重复调用
+            # 同步可能由其它渠道平仓的情况（已在 sync_positions_from_exchange 中处理）
+            # try:
+            #     self.sync_external_fills()
+            # except Exception as e:
+            #     self.logger.warning(f"同步外部成交时出错: {e}")
 
         except Exception as e:  # 防御性日志，避免中断主流程
             self.logger.warning(f"订单巡检异常: {e}", exc_info=True)
