@@ -932,6 +932,28 @@ class TradeEngine:
             f"当前资金={self.realized_pnl:.6f} BTC"
         )
 
+        # 发送飞书平仓通知
+        try:
+            # 计算手续费
+            fee_usd = gross_usd - net_usd if gross_usd and net_usd else 0.0
+            self.feishu_bot.send_close_position_notification(
+                symbol=config.SYMBOL,
+                side=pos.side,
+                entry_price=pos.entry_price,
+                close_price=close_price,
+                contracts=pos.contracts,
+                entry_time=pos.entry_time,
+                close_time=close_time,
+                gross_usd=gross_usd,
+                fee_usd=fee_usd,
+                net_usd=net_usd,
+                net_btc=net_btc,
+                reason=reason,
+                tp_hit=pos.tp_hit if hasattr(pos, 'tp_hit') else []
+            )
+        except Exception as e:
+            self.logger.warning(f"发送飞书平仓通知失败: {e}")
+
         # 移除持仓
         self.positions.remove(pos)
 
