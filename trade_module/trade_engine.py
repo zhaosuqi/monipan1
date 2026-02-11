@@ -495,15 +495,17 @@ class TradeEngine:
         else:
             available_capital = max(0.0, self.realized_pnl - self.locked_capital)
 
-        # 预留2%的资金不参与开仓
+        # 预留初始资金的2%作为安全垫，避免资金耗尽导致开仓失败
+        # 注意：这里用初始资金计算固定预留金额，而非剩余资金的百分比
         reserve_ratio = 0.02 if not config.NO_LIMIT_POS else 0.0
-        tradable_capital = available_capital * (1 - reserve_ratio)
+        min_reserve = self.initial_capital * reserve_ratio  # 固定预留金额
+        tradable_capital = max(0.0, available_capital - min_reserve)
 
         if debug_mode:
-            self.logger.info(f"💰 [资金检查] 可用资金={available_capital:.6f} BTC")
+            self.logger.info(f"💰 [资金检查] 可用资金={available_capital:.6f} BTC | 预留={min_reserve:.6f} BTC | 可交易={tradable_capital:.6f} BTC")
 
-        if available_capital <= 0:
-            self.logger.warning(f"❌ [{ts_str}] ❌❌❌ 开仓失败: 可用资金不足 ({available_capital:.6f} BTC)，跳过开仓")
+        if tradable_capital <= 0:
+            self.logger.warning(f"❌ [{ts_str}] ❌❌❌ 开仓失败: 可交易资金不足 (可用={available_capital:.6f} BTC, 预留={min_reserve:.6f} BTC)，跳过开仓")
             return False
 
         # 检查止损冷却 - 与macd_refactor.py保持一致
@@ -949,7 +951,8 @@ class TradeEngine:
                 net_usd=net_usd,
                 net_btc=net_btc,
                 reason=reason,
-                tp_hit=pos.tp_hit if hasattr(pos, 'tp_hit') else []
+                tp_hit=pos.tp_hit if hasattr(pos, 'tp_hit') else [],
+                total_balance_btc=self.realized_pnl
             )
         except Exception as e:
             self.logger.warning(f"发送飞书平仓通知失败: {e}")
@@ -1103,7 +1106,8 @@ class TradeEngine:
                                 gross_usd=gross_usd,
                                 fee_usd=fee_usd,
                                 net_usd=net_usd,
-                                net_btc=net_btc
+                                net_btc=net_btc,
+                                total_balance_btc=self.realized_pnl
                             )
                         except Exception as e:
                             self.logger.warning(f"飞书同步平仓通知发送失败: {e}")
@@ -1196,7 +1200,8 @@ class TradeEngine:
                             gross_usd=gross_usd,
                             fee_usd=fee_usd,
                             net_usd=net_usd,
-                            net_btc=net_btc
+                            net_btc=net_btc,
+                            total_balance_btc=self.realized_pnl
                         )
                     except Exception as e:
                         self.logger.warning(f"飞书同步平仓通知发送失败: {e}")

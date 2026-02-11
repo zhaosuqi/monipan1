@@ -183,7 +183,8 @@ class FeishuBot:
         net_usd: float,
         net_btc: float,
         reason: str,
-        tp_hit: list = None
+        tp_hit: list = None,
+        total_balance_btc: float = 0.0
     ) -> bool:
         """
         发送平仓通知（富文本卡片，含详细盈亏）
@@ -202,6 +203,7 @@ class FeishuBot:
             net_btc: 净盈亏(BTC)
             reason: 平仓原因
             tp_hit: 已触发的止盈级别
+            total_balance_btc: 当前总余额(BTC)
         """
         # 调试日志：检查传入的价格
         self.logger.info(f"[飞书平仓通知] entry_price={entry_price:.2f}, close_price={close_price:.2f}")
@@ -315,6 +317,13 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**净盈亏**\n**${net_usd:+.2f} ({net_btc:+.6f} BTC)**"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**当前总余额**\n**{total_balance_btc:.6f} BTC** 💰"
                             }
                         }
                     ]
@@ -822,7 +831,8 @@ class FeishuBot:
         gross_usd: float,
         fee_usd: float,
         net_usd: float,
-        net_btc: float
+        net_btc: float,
+        total_balance_btc: float = 0.0
     ) -> bool:
         """
         发送同步平仓通知（从币安同步的平仓）
@@ -839,6 +849,7 @@ class FeishuBot:
             fee_usd: 手续费(USD)
             net_usd: 净盈亏(USD)
             net_btc: 净盈亏(BTC)
+            total_balance_btc: 当前总余额(BTC)
         """
         side_cn = "做多" if side == 'long' else "做空"
 
@@ -941,6 +952,13 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**净盈亏**\n**${net_usd:+.2f} ({net_btc:+.6f} BTC)**"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**当前总余额**\n**{total_balance_btc:.6f} BTC** 💰"
                             }
                         }
                     ]
