@@ -111,6 +111,7 @@ class TradeEngine:
         # 账户状态
         self.initial_capital = config.POSITION_BTC
         self.realized_pnl = self.initial_capital
+        self.cached_total_balance = self.initial_capital  # 缓存的交易所账户总余额（由定时同步更新）
 
         # 统计数据
         self.signals_count = 0
@@ -492,17 +493,19 @@ class TradeEngine:
 
         if config.NO_LIMIT_POS:
             available_capital = 1.0
+            total_balance = 1.0
         else:
             available_capital = max(0.0, self.realized_pnl - self.locked_capital)
+            # 使用缓存的账户总余额（由定时同步更新）
+            total_balance = self.cached_total_balance
 
-        # 预留初始资金的2%作为安全垫，避免资金耗尽导致开仓失败
-        # 注意：这里用初始资金计算固定预留金额，而非剩余资金的百分比
+        # 预留账户总余额的2%作为安全垫，避免资金耗尽导致开仓失败
         reserve_ratio = 0.02 if not config.NO_LIMIT_POS else 0.0
-        min_reserve = self.initial_capital * reserve_ratio  # 固定预留金额
+        min_reserve = total_balance * reserve_ratio  # 按缓存的账户总余额计算预留
         tradable_capital = max(0.0, available_capital - min_reserve)
 
         if debug_mode:
-            self.logger.info(f"💰 [资金检查] 可用资金={available_capital:.6f} BTC | 预留={min_reserve:.6f} BTC | 可交易={tradable_capital:.6f} BTC")
+            self.logger.info(f"💰 [资金检查] 账户总资金={total_balance:.6f} BTC | 可用资金={available_capital:.6f} BTC | 预留={min_reserve:.6f} BTC | 可交易={tradable_capital:.6f} BTC")
 
         if tradable_capital <= 0:
             self.logger.warning(f"❌ [{ts_str}] ❌❌❌ 开仓失败: 可交易资金不足 (可用={available_capital:.6f} BTC, 预留={min_reserve:.6f} BTC)，跳过开仓")
