@@ -614,15 +614,15 @@ class BinanceExchange(BaseExchange):
             if not self.client:
                 return []
 
+            # CMFutures 使用 get_account_trades 方法
             if order_id is not None:
-                trades = self.client.user_trades(symbol=symbol, orderId=int(order_id))
+                trades = self.client.get_account_trades(symbol=symbol, orderId=int(order_id))
             else:
                 try:
-                    trades = self.client.user_trades(symbol=symbol, limit=limit)
+                    trades = self.client.get_account_trades(symbol=symbol, limit=limit)
                 except TypeError:
-                    trades = self.client.user_trades(symbol=symbol)
+                    trades = self.client.get_account_trades(symbol=symbol)
 
-            self.logger.info(f"📥 [API原始响应] user_trades: len={len(trades) if trades else 0}")
             return trades or []
         except Exception as e:
             self.logger.warning(f"获取 user_trades 失败: {e}")

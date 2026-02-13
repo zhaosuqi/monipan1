@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """飞书通知机器人 - 支持开仓、平仓、止盈等交易事件通知"""
-import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-from core.logger import get_logger
+import requests
+
 from core.config import config
+from core.logger import get_logger
 
 
 class FeishuBot:
@@ -178,9 +179,8 @@ class FeishuBot:
         contracts: int,
         entry_time: datetime,
         close_time: datetime,
-        gross_usd: float,
-        fee_usd: float,
-        net_usd: float,
+        gross_btc: float,
+        fee_btc: float,
         net_btc: float,
         reason: str,
         tp_hit: list = None,
@@ -197,9 +197,8 @@ class FeishuBot:
             contracts: 合约数量
             entry_time: 开仓时间
             close_time: 平仓时间
-            gross_usd: 毛盈亏(USD)
-            fee_usd: 手续费(USD)
-            net_usd: 净盈亏(USD)
+            gross_btc: 毛盈亏(BTC)
+            fee_btc: 手续费(BTC)
             net_btc: 净盈亏(BTC)
             reason: 平仓原因
             tp_hit: 已触发的止盈级别
@@ -212,10 +211,10 @@ class FeishuBot:
         side_cn = "做多" if side == 'long' else "做空"
 
         # 盈亏颜色和图标
-        if net_usd > 0:
+        if net_btc > 0:
             pnl_color = "green"
             pnl_icon = "盈利 ✅"
-        elif net_usd < 0:
+        elif net_btc < 0:
             pnl_color = "red"
             pnl_icon = "亏损 ❌"
         else:
@@ -302,21 +301,21 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**毛盈亏**\n${gross_usd:+.2f}"
+                                "content": f"**毛盈亏**\n{gross_btc:+.8f} BTC"
                             }
                         },
                         {
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**手续费**\n-${fee_usd:.2f}"
+                                "content": f"**手续费**\n-{fee_btc:.8f} BTC"
                             }
                         },
                         {
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**净盈亏**\n**${net_usd:+.2f} ({net_btc:+.6f} BTC)**"
+                                "content": f"**净盈亏**\n**{net_btc:+.8f} BTC**"
                             }
                         },
                         {
@@ -981,6 +980,148 @@ class FeishuBot:
                             "text": {
                                 "tag": "lark_md",
                                 "content": f"**发送时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
+    def send_trade_history_report(
+        self,
+        trades: list,
+        total_balance_btc: float = 0.0
+    ) -> bool:
+        """
+        发送最近交易历史报告
+
+        Args:
+            trades: 交易记录列表，每个元素包含:
+                - exit_time: 平仓时间
+                - side: 方向 (long/short)
+                - entry_price: 开仓价格
+                - exit_price: 平仓价格
+                - net_pnl_btc: 净盈亏(BTC)
+                - fee_btc: 手续费(BTC)
+            total_balance_btc: 当前总余额(BTC)
+        """
+        if not trades:
+            return False
+
+        # 统计汇总
+        total_pnl = sum(t.get('net_pnl_btc', 0) or 0 for t in trades)
+        total_fee = sum(t.get('fee_btc', 0) or 0 for t in trades)
+        win_count = sum(1 for t in trades if (t.get('net_pnl_btc', 0) or 0) > 0)
+        loss_count = len(trades) - win_count
+
+        # 报告颜色
+        if total_pnl > 0:
+            pnl_color = "green"
+            pnl_icon = "盈利 ✅"
+        elif total_pnl < 0:
+            pnl_color = "red"
+            pnl_icon = "亏损 ❌"
+        else:
+            pnl_color = "grey"
+            pnl_icon = "平手 ➖"
+
+        # 构建交易明细文本
+        trade_lines = []
+        for i, t in enumerate(trades, 1):
+            exit_time = t.get('exit_time', '')
+            if hasattr(exit_time, 'strftime'):
+                time_str = exit_time.strftime('%m-%d %H:%M')
+            else:
+                time_str = str(exit_time)[:16] if exit_time else '-'
+            
+            side = t.get('side', '')
+            side_cn = "多" if side == 'long' else "空"
+            entry_price = t.get('entry_price', 0) or 0
+            exit_price = t.get('exit_price', 0) or 0
+            net_pnl = t.get('net_pnl_btc', 0) or 0
+            fee = t.get('fee_btc', 0) or 0
+            
+            pnl_sign = "+" if net_pnl >= 0 else ""
+            trade_lines.append(
+                f"{i}. {time_str} | {side_cn} | "
+                f"{entry_price:.1f}→{exit_price:.1f} | "
+                f"{pnl_sign}{net_pnl:.6f} BTC | 费:{fee:.6f}"
+            )
+
+        trades_content = "\n".join(trade_lines) if trade_lines else "暂无交易记录"
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"📊 最近{len(trades)}笔交易报告 - {pnl_icon}",
+                    "tag": "plain_text"
+                },
+                "template": pnl_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**成功/失败**\n{win_count}/{loss_count}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**胜率**\n{win_count/len(trades)*100:.1f}%" if trades else "**胜率**\n-"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**总盈亏**\n{total_pnl:+.6f} BTC"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**总手续费**\n-{total_fee:.6f} BTC"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**交易明细**\n```\n{trades_content}\n```"
+                    }
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**当前余额**\n{total_balance_btc:.6f} BTC"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**报告时间**\n{self._get_now_str()}"
                             }
                         }
                     ]

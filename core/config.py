@@ -280,6 +280,10 @@ class Config:
         # 飞书机器人
         self.FEISHU_WEBHOOK = os.getenv('FEISHU_WEBHOOK', '')
         self.FEISHU_ENABLED = os.getenv('FEISHU_ENABLED', '0').lower() in ('1', 'true', 'yes')
+        # 交易历史报告发送间隔（分钟），0表示禁用
+        self.TRADE_HISTORY_REPORT_INTERVAL = int(os.getenv('TRADE_HISTORY_REPORT_INTERVAL', '0'))
+        # 交易历史报告显示最近几次交易
+        self.TRADE_HISTORY_REPORT_COUNT = int(os.getenv('TRADE_HISTORY_REPORT_COUNT', '10'))
 
         # Web服务
         self.WEB_HOST = os.getenv('WEB_HOST', '0.0.0.0')

@@ -148,6 +148,23 @@ class TradeEngine:
                 f"后台订单巡检线程已启动，每 {self.order_sync_interval}s 执行一次"
             )
 
+        # 交易历史报告定时发送
+        self.trade_history_report_interval = getattr(config, 'TRADE_HISTORY_REPORT_INTERVAL', 0)
+        self.trade_history_report_count = getattr(config, 'TRADE_HISTORY_REPORT_COUNT', 10)
+        self.last_trade_history_report: Optional[pd.Timestamp] = None
+        self._trade_report_stop_event = threading.Event()
+        self._trade_report_thread = None
+        if self.trade_history_report_interval > 0:
+            self._trade_report_thread = threading.Thread(
+                target=self._trade_report_loop,
+                name="trade-report-thread",
+                daemon=True,
+            )
+            self._trade_report_thread.start()
+            self.logger.info(
+                f"交易历史报告线程已启动，每 {self.trade_history_report_interval} 分钟发送一次"
+            )
+
         self.logger.info("=" * 60)
         self.logger.info("交易引擎初始化完成")
         self.logger.info(f"初始资金: {self.initial_capital} BTC")
@@ -335,11 +352,65 @@ class TradeEngine:
             self._order_sync_stop_event.wait(interval)
 
     def stop(self):
-        """停止后台订单巡检线程"""
+        """停止后台线程"""
+        # 停止订单巡检线程
         if not self._order_sync_stop_event.is_set():
             self._order_sync_stop_event.set()
         if self._order_sync_thread and self._order_sync_thread.is_alive():
             self._order_sync_thread.join(timeout=2)
+        # 停止交易报告线程
+        if not self._trade_report_stop_event.is_set():
+            self._trade_report_stop_event.set()
+        if self._trade_report_thread and self._trade_report_thread.is_alive():
+            self._trade_report_thread.join(timeout=2)
+
+    def _trade_report_loop(self):
+        """后台线程：定时发送交易历史报告"""
+        interval_seconds = max(60, int(self.trade_history_report_interval * 60))
+        while not self._trade_report_stop_event.is_set():
+            try:
+                self._send_trade_history_report()
+            except Exception as e:
+                self.logger.warning(f"发送交易历史报告异常: {e}", exc_info=True)
+            self._trade_report_stop_event.wait(interval_seconds)
+
+    def _send_trade_history_report(self):
+        """发送交易历史报告到飞书"""
+        if not self.trades:
+            self.logger.debug("暂无交易记录，跳过报告发送")
+            return
+
+        # 获取最近N笔交易
+        report_count = self.trade_history_report_count
+        recent_trades = self.trades[-report_count:] if len(self.trades) > report_count else self.trades
+
+        # 转换为飞书报告需要的格式
+        trade_list = []
+        for trade in recent_trades:
+            # 计算手续费（从 gross_pnl 和 net_pnl 推算）
+            gross_pnl_btc = trade.gross_pnl / trade.exit_price if trade.exit_price else 0
+            net_pnl_btc = trade.net_pnl / trade.exit_price if trade.exit_price else 0
+            fee_btc = gross_pnl_btc - net_pnl_btc
+
+            trade_list.append({
+                'exit_time': trade.exit_time,
+                'side': trade.side,
+                'entry_price': trade.entry_price,
+                'exit_price': trade.exit_price,
+                'net_pnl_btc': net_pnl_btc,
+                'fee_btc': fee_btc
+            })
+
+        # 发送报告
+        try:
+            self.feishu_bot.send_trade_history_report(
+                trades=trade_list,
+                total_balance_btc=self.realized_pnl
+            )
+            self.last_trade_history_report = pd.Timestamp.utcnow()
+            self.logger.info(f"📊 交易历史报告已发送，包含 {len(trade_list)} 笔交易")
+        except Exception as e:
+            self.logger.warning(f"发送交易历史报告失败: {e}")
 
     def _backfill_position_from_exchange(self, ts: pd.Timestamp, price: float):
         """如果交易所存在持仓而本地没有，则补建本地持仓，进入TP/SL逻辑"""
@@ -796,7 +867,9 @@ class TradeEngine:
 
     def close_position(self, pos: Position, close_time, close_price: float,
                        reason: str, net_btc: Optional[float] = None,
-                       pnl_already_applied: bool = False):
+                       pnl_already_applied: bool = False,
+                       real_fee_btc: Optional[float] = None,
+                       real_pnl_btc: Optional[float] = None):
         """
         平仓
 
@@ -806,6 +879,9 @@ class TradeEngine:
             close_price: 平仓价格
             reason: 平仓原因
             net_btc: 净盈亏(BTC)，如果为None则计算
+            pnl_already_applied: 盈亏是否已经在上游处理
+            real_fee_btc: 从交易所接口获取的真实手续费(BTC)，用于飞书通知
+            real_pnl_btc: 从交易所接口获取的真实实现盈亏(BTC)，用于飞书通知
         """
         # 转换时间戳为pandas.Timestamp
         if not isinstance(close_time, pd.Timestamp):
@@ -873,12 +949,14 @@ class TradeEngine:
 
         close_fee_rate = config.TAKER_FEE_RATE
 
+        # 先计算 fee_btc 和 gross_btc（飞书通知需要）
+        fee_btc = (
+            (notional_usd * close_fee_rate) / close_price
+            if close_price else 0.0
+        )
+        gross_btc = gross_usd / close_price if close_price else 0.0
+        
         if net_btc is None:
-            fee_btc = (
-                (notional_usd * close_fee_rate) / close_price
-                if close_price else 0.0
-            )
-            gross_btc = gross_usd / close_price if close_price else 0.0
             net_btc = gross_btc - fee_btc
 
         net_usd = net_btc * close_price if close_price else net_btc
@@ -937,10 +1015,31 @@ class TradeEngine:
             f"当前资金={self.realized_pnl:.6f} BTC"
         )
 
+        # 平仓后查询交易所账户余额并更新缓存（在发送飞书通知之前）
+        try:
+            account_info = self.exchange.get_account_info()
+            if account_info and hasattr(account_info, 'total_wallet_balance'):
+                self.cached_total_balance = account_info.total_wallet_balance
+                # 同步更新 realized_pnl 为交易所实际余额
+                self.realized_pnl = account_info.total_wallet_balance
+                self.logger.info(
+                    f"📊 平仓后账户余额更新: {self.cached_total_balance:.8f} BTC"
+                )
+        except Exception as e:
+            self.logger.warning(f"⚠️ 平仓后查询账户余额失败: {e}")
+
         # 发送飞书平仓通知
         try:
-            # 计算手续费
-            fee_usd = gross_usd - net_usd if gross_usd and net_usd else 0.0
+            # 优先使用从交易所接口获取的真实数据(BTC)，否则使用本地计算值
+            fee_btc_final = real_fee_btc if real_fee_btc is not None else fee_btc
+            pnl_btc_final = real_pnl_btc if real_pnl_btc is not None else net_btc
+            
+            # 根据真实盈亏重新计算毛利（如果有真实数据）
+            gross_btc_final = gross_btc
+            if real_pnl_btc is not None and real_fee_btc is not None:
+                # 真实毛利 = 真实净利 + 真实手续费
+                gross_btc_final = real_pnl_btc + real_fee_btc
+            
             self.feishu_bot.send_close_position_notification(
                 symbol=config.SYMBOL,
                 side=pos.side,
@@ -949,13 +1048,12 @@ class TradeEngine:
                 contracts=pos.contracts,
                 entry_time=pos.entry_time,
                 close_time=close_time,
-                gross_usd=gross_usd,
-                fee_usd=fee_usd,
-                net_usd=net_usd,
-                net_btc=net_btc,
+                gross_btc=gross_btc_final,
+                fee_btc=fee_btc_final,
+                net_btc=pnl_btc_final,
                 reason=reason,
                 tp_hit=pos.tp_hit if hasattr(pos, 'tp_hit') else [],
-                total_balance_btc=self.realized_pnl
+                total_balance_btc=self.cached_total_balance
             )
         except Exception as e:
             self.logger.warning(f"发送飞书平仓通知失败: {e}")
@@ -1187,6 +1285,14 @@ class TradeEngine:
                 if pos.contracts <= 0:
                     self.logger.info(f"ℹ️ 持仓已被外部平全仓，持仓ID={pos.id} 已移除")
 
+                    # 平仓后查询账户余额并更新缓存
+                    try:
+                        account_info = self.exchange.get_account_info()
+                        self.cached_total_balance = account_info.total_wallet_balance
+                        self.logger.info(f"📊 平仓后账户余额更新: {self.cached_total_balance:.8f} BTC")
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ 查询账户余额失败: {e}")
+
                     # 飞书同步平仓通知（成交明细）
                     try:
                         gross_usd = gross_pnl_btc * avg_fill_price
@@ -1204,7 +1310,7 @@ class TradeEngine:
                             fee_usd=fee_usd,
                             net_usd=net_usd,
                             net_btc=net_btc,
-                            total_balance_btc=self.realized_pnl
+                            total_balance_btc=self.cached_total_balance
                         )
                     except Exception as e:
                         self.logger.warning(f"飞书同步平仓通知发送失败: {e}")
@@ -1219,7 +1325,8 @@ class TradeEngine:
 
 
     def _close_position_after_drawdown(self, pos: Position, ts: pd.Timestamp,
-                                       price: float, drawdown_price: float):
+                                       price: float, drawdown_price: float,
+                                       order_id: Optional[int] = None):
         """
         回撤平仓后的清理工作
 
@@ -1228,6 +1335,7 @@ class TradeEngine:
             ts: 平仓时间
             price: 成交价格
             drawdown_price: 回撤触发价
+            order_id: 平仓订单ID，用于获取真实成交明细
         """
         cn = config.CONTRACT_NOTIONAL
         notional_usd = cn * pos.contracts
@@ -1259,8 +1367,17 @@ class TradeEngine:
             fee_btc * price
         )
 
+        # 尝试获取真实的成交明细（手续费和实现盈亏）
+        real_fee_btc = None
+        real_pnl_btc = None
+        if order_id:
+            trade_details = self._get_order_trade_details(order_id)
+            real_fee_btc = trade_details.get('real_fee_btc')
+            real_pnl_btc = trade_details.get('real_pnl_btc')
+
         # 关闭持仓
-        self.close_position(pos, ts, price, 'drawdown_close', net_btc, pnl_already_applied=True)
+        self.close_position(pos, ts, price, 'drawdown_close', net_btc, pnl_already_applied=True,
+                           real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
 
     def _market_close_for_drawdown(self, pos: Position, ts: pd.Timestamp,
                                    price: float) -> bool:
@@ -1325,7 +1442,7 @@ class TradeEngine:
                     fallback_price=order.avg_price if order.avg_price > 0 else price
                 )
                 self.logger.info(f"✅ 市价单成交 @ {actual_price:.2f}")
-                self._close_position_after_drawdown(pos, ts, actual_price, actual_price)
+                self._close_position_after_drawdown(pos, ts, actual_price, actual_price, order_id=order.order_id)
                 return True
             else:
                 self.logger.error(f"❌ 市价单失败: {order.status.value}")
@@ -1781,8 +1898,16 @@ class TradeEngine:
                     fee_btc * actual_price
                 )
 
+                # 尝试获取真实的成交明细（手续费和实现盈亏）
+                real_fee_btc = None
+                real_pnl_btc = None
+                trade_details = self._get_order_trade_details(order.order_id)
+                real_fee_btc = trade_details.get('real_fee_btc')
+                real_pnl_btc = trade_details.get('real_pnl_btc')
+
                 # 关闭持仓
-                self.close_position(pos, ts, actual_price, 'take_profit_final', net_btc, pnl_already_applied=True)
+                self.close_position(pos, ts, actual_price, 'take_profit_final', net_btc, pnl_already_applied=True,
+                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
                 return True
             else:
                 self.logger.error(f"❌ 止盈市价单失败: {order.status.value}")
@@ -2021,6 +2146,61 @@ class TradeEngine:
                     f"⚠️ [查询订单] 异常(已轮询{elapsed:.1f}秒): {e}"
                 )
                 time.sleep(poll_interval)
+
+    def _get_order_trade_details(self, order_id: int) -> dict:
+        """
+        获取订单成交明细中的手续费和实现盈亏
+
+        通过 get_user_trades 接口获取订单的真实成交数据，
+        从中提取手续费(commission)和实现盈亏(realizedPnl)。
+
+        Args:
+            order_id: 订单ID
+
+        Returns:
+            dict: 包含以下字段：
+                - real_fee_btc: 真实手续费(BTC)，无数据时为 None
+                - real_pnl_btc: 真实实现盈亏(BTC)，无数据时为 None
+                - commission_asset: 手续费资产类型
+        """
+        result = {
+            'real_fee_btc': None,
+            'real_pnl_btc': None,
+            'commission_asset': None
+        }
+
+        try:
+            trades = self.exchange.get_user_trades(config.SYMBOL, order_id=order_id)
+            if not trades:
+                self.logger.warning(f"⚠️ [成交明细] 订单 {order_id} 无成交记录")
+                return result
+
+            total_commission = 0.0
+            total_realized_pnl = 0.0
+            commission_asset = None
+
+            for trade in trades:
+                # 累加手续费
+                commission = float(trade.get('commission', 0) or 0)
+                total_commission += commission
+
+                # 累加实现盈亏
+                realized_pnl = float(trade.get('realizedPnl', 0) or 0)
+                total_realized_pnl += realized_pnl
+
+                # 获取手续费资产（通常是 BTC 或 USDT）
+                if not commission_asset:
+                    commission_asset = trade.get('commissionAsset', '')
+
+            # 直接使用 BTC 值（币本位合约）
+            result['real_fee_btc'] = total_commission
+            result['real_pnl_btc'] = total_realized_pnl
+            result['commission_asset'] = commission_asset
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ [成交明细] 获取订单 {order_id} 成交明细失败: {e}")
+
+        return result
 
     def _market_tp_close(
         self, pos: Position, ts: pd.Timestamp,
@@ -2388,7 +2568,7 @@ class TradeEngine:
             if order.status.value == 'FILLED':
                 self.logger.info(f"✅ 止损单立即成交")
                 actual_price = order.avg_price
-                self._close_position_after_sl(pos, ts, actual_price, 'stop_loss')
+                self._close_position_after_sl(pos, ts, actual_price, 'stop_loss', order_id=order.order_id)
                 return True
             elif order.status.value == 'EXPIRED':
                 # 10条K线未成交，尝试下一轮
@@ -2443,7 +2623,7 @@ class TradeEngine:
                 # 订单已成交
                 self.logger.info(f"✅ 止损单成交 | 订单ID={pos.sl_order_id}")
                 actual_price = order.avg_price
-                self._close_position_after_sl(pos, ts, actual_price, 'stop_loss')
+                self._close_position_after_sl(pos, ts, actual_price, 'stop_loss', order_id=pos.sl_order_id)
                 return True
 
             elif order.status.value in ['EXPIRED', 'REJECTED', 'CANCELED']:
@@ -2578,7 +2758,7 @@ class TradeEngine:
                     fallback_price=order.avg_price if order.avg_price > 0 else price
                 )
                 self.logger.info(f"✅ 市价单成交 @ {actual_price:.2f}")
-                self._close_position_after_sl(pos, ts, actual_price, reason)
+                self._close_position_after_sl(pos, ts, actual_price, reason, order_id=order.order_id)
                 return True
             else:
                 self.logger.error(f"❌ 市价单失败: {order.status.value}")
@@ -2589,7 +2769,8 @@ class TradeEngine:
             return False
 
     def _close_position_after_sl(self, pos: Position, ts: pd.Timestamp,
-                                   price: float, reason: str):
+                                   price: float, reason: str,
+                                   order_id: Optional[int] = None):
         """
         止损平仓后的清理工作
 
@@ -2598,6 +2779,7 @@ class TradeEngine:
             ts: 平仓时间
             price: 平仓价格
             reason: 平仓原因
+            order_id: 平仓订单ID，用于获取真实成交明细
         """
         # 记录止损时间和方向（用于冷却逻辑）
         self.stoploss_time = ts
@@ -2632,8 +2814,17 @@ class TradeEngine:
             fee_btc * price
         )
 
+        # 尝试获取真实的成交明细（手续费和实现盈亏）
+        real_fee_btc = None
+        real_pnl_btc = None
+        if order_id:
+            trade_details = self._get_order_trade_details(order_id)
+            real_fee_btc = trade_details.get('real_fee_btc')
+            real_pnl_btc = trade_details.get('real_pnl_btc')
+
         # 关闭持仓
-        self.close_position(pos, ts, price, reason, net_btc, pnl_already_applied=True)
+        self.close_position(pos, ts, price, reason, net_btc, pnl_already_applied=True,
+                           real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
 
 
     def check_drawdown(self, pos: Position, ts: pd.Timestamp,
@@ -2849,8 +3040,16 @@ class TradeEngine:
                     fee_btc * actual_price
                 )
 
+                # 尝试获取真实的成交明细（手续费和实现盈亏）
+                real_fee_btc = None
+                real_pnl_btc = None
+                trade_details = self._get_order_trade_details(order.order_id)
+                real_fee_btc = trade_details.get('real_fee_btc')
+                real_pnl_btc = trade_details.get('real_pnl_btc')
+
                 # 关闭持仓
-                self.close_position(pos, ts, actual_price, 'drawdown_close', net_btc, pnl_already_applied=True)
+                self.close_position(pos, ts, actual_price, 'drawdown_close', net_btc, pnl_already_applied=True,
+                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
                 return True
             else:
                 self.logger.error(f"❌ 回撤市价单失败: {order.status.value}")
