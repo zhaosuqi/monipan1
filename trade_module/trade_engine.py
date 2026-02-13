@@ -367,6 +367,8 @@ class TradeEngine:
     def _trade_report_loop(self):
         """后台线程：定时发送交易历史报告"""
         interval_seconds = max(60, int(self.trade_history_report_interval * 60))
+        # 首次启动时先等待一个周期，避免与启动时的显式调用重复
+        self._trade_report_stop_event.wait(interval_seconds)
         while not self._trade_report_stop_event.is_set():
             try:
                 self._send_trade_history_report()
@@ -424,18 +426,51 @@ class TradeEngine:
                     # 筛选平仓记录（realizedPnl != 0）
                     close_orders = []
                     for order_id, order_trades in grouped.items():
-                        total_pnl = sum(float(t.get('realizedPnl', 0) or 0) for t in order_trades)
+                        total_pnl = sum(
+                            float(t.get('realizedPnl', 0) or 0)
+                            for t in order_trades
+                        )
                         if abs(total_pnl) > 0:  # 有实现盈亏的才是平仓
-                            total_fee = sum(float(t.get('commission', 0) or 0) for t in order_trades)
+                            total_fee = sum(
+                                float(t.get('commission', 0) or 0)
+                                for t in order_trades
+                            )
+                            total_qty = sum(
+                                float(t.get('qty', 0) or 0)
+                                for t in order_trades
+                            )
                             first_trade = order_trades[0]
-                            side = 'long' if first_trade.get('side') == 'SELL' else 'short'  # SELL平多，BUY平空
+                            # SELL平多，BUY平空
+                            side = 'long' if first_trade.get('side') == 'SELL' \
+                                else 'short'
                             avg_price = float(first_trade.get('price', 0) or 0)
                             trade_time = first_trade.get('time', 0)
                             
+                            # 通过realizedPnl反算开仓价格（币本位合约）
+                            # 多单: PnL = qty×(1/entry - 1/exit)
+                            # 空单: PnL = qty×(1/exit - 1/entry)
+                            entry_price = 0
+                            if avg_price > 0 and total_qty > 0:
+                                try:
+                                    if side == 'long':
+                                        # entry = 1/(1/exit - PnL/qty)
+                                        denom = 1/avg_price - total_pnl/total_qty
+                                        if abs(denom) > 1e-12:
+                                            entry_price = 1 / denom
+                                    else:
+                                        # entry = 1/(1/exit + PnL/qty)
+                                        denom = 1/avg_price + total_pnl/total_qty
+                                        if abs(denom) > 1e-12:
+                                            entry_price = 1 / denom
+                                except Exception:
+                                    entry_price = 0
+                            
                             close_orders.append({
-                                'exit_time': pd.to_datetime(trade_time, unit='ms') if trade_time else None,
+                                'exit_time': pd.to_datetime(
+                                    trade_time, unit='ms'
+                                ) if trade_time else None,
                                 'side': side,
-                                'entry_price': 0,  # API 不返回开仓价
+                                'entry_price': entry_price,
                                 'exit_price': avg_price,
                                 'net_pnl_btc': total_pnl,
                                 'fee_btc': total_fee
@@ -463,10 +498,19 @@ class TradeEngine:
         self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
         self.logger.info(f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}")
         
+        # 从交易所API获取真实账户余额
+        try:
+            account_info = self.exchange.get_account_info('BTC')
+            total_balance_btc = account_info.total_wallet_balance
+            self.logger.info(f"   交易所账户余额: {total_balance_btc:.8f} BTC")
+        except Exception as e:
+            self.logger.warning(f"   获取交易所余额失败，使用本地记录: {e}")
+            total_balance_btc = self.realized_pnl
+        
         try:
             result = self.feishu_bot.send_trade_history_report(
                 trades=trade_list,
-                total_balance_btc=self.realized_pnl
+                total_balance_btc=total_balance_btc
             )
             self.last_trade_history_report = pd.Timestamp.utcnow()
             self.logger.info(f"📊 交易历史报告发送结果: {result}")
