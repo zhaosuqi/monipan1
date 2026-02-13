@@ -376,41 +376,104 @@ class TradeEngine:
 
     def _send_trade_history_report(self):
         """发送交易历史报告到飞书"""
-        if not self.trades:
-            self.logger.debug("暂无交易记录，跳过报告发送")
+        self.logger.info("=" * 60)
+        self.logger.info("📊 [交易历史报告] 开始生成...")
+        self.logger.info(f"   内存中交易记录数: {len(self.trades)}")
+        self.logger.info(f"   报告显示条数配置: {self.trade_history_report_count}")
+        
+        trade_list = []
+        
+        # 优先使用内存中的交易记录
+        if self.trades:
+            self.logger.info("   使用内存中的交易记录")
+            # 获取最近N笔交易
+            report_count = self.trade_history_report_count
+            recent_trades = self.trades[-report_count:] if len(self.trades) > report_count else self.trades
+
+            # 转换为飞书报告需要的格式
+            for trade in recent_trades:
+                # 计算手续费（从 gross_pnl 和 net_pnl 推算）
+                gross_pnl_btc = trade.gross_pnl / trade.exit_price if trade.exit_price else 0
+                net_pnl_btc = trade.net_pnl / trade.exit_price if trade.exit_price else 0
+                fee_btc = gross_pnl_btc - net_pnl_btc
+
+                trade_list.append({
+                    'exit_time': trade.exit_time,
+                    'side': trade.side,
+                    'entry_price': trade.entry_price,
+                    'exit_price': trade.exit_price,
+                    'net_pnl_btc': net_pnl_btc,
+                    'fee_btc': fee_btc
+                })
+        else:
+            # 内存中没有交易记录，尝试从交易所 API 获取
+            self.logger.info("   内存中无交易记录，从交易所获取历史成交...")
+            try:
+                trades_from_api = self.exchange.get_user_trades(config.SYMBOL, limit=50)
+                self.logger.info(f"   交易所返回成交记录数: {len(trades_from_api) if trades_from_api else 0}")
+                
+                if trades_from_api:
+                    # 按订单ID分组，找出平仓订单（有 realizedPnl 的）
+                    from collections import defaultdict
+                    grouped = defaultdict(list)
+                    for t in trades_from_api:
+                        grouped[t.get('orderId')].append(t)
+                    
+                    self.logger.info(f"   订单分组数: {len(grouped)}")
+                    
+                    # 筛选平仓记录（realizedPnl != 0）
+                    close_orders = []
+                    for order_id, order_trades in grouped.items():
+                        total_pnl = sum(float(t.get('realizedPnl', 0) or 0) for t in order_trades)
+                        if abs(total_pnl) > 0:  # 有实现盈亏的才是平仓
+                            total_fee = sum(float(t.get('commission', 0) or 0) for t in order_trades)
+                            first_trade = order_trades[0]
+                            side = 'long' if first_trade.get('side') == 'SELL' else 'short'  # SELL平多，BUY平空
+                            avg_price = float(first_trade.get('price', 0) or 0)
+                            trade_time = first_trade.get('time', 0)
+                            
+                            close_orders.append({
+                                'exit_time': pd.to_datetime(trade_time, unit='ms') if trade_time else None,
+                                'side': side,
+                                'entry_price': 0,  # API 不返回开仓价
+                                'exit_price': avg_price,
+                                'net_pnl_btc': total_pnl,
+                                'fee_btc': total_fee
+                            })
+                    
+                    self.logger.info(f"   筛选出平仓订单数: {len(close_orders)}")
+                    
+                    # 按时间排序，取最近N笔
+                    close_orders.sort(key=lambda x: x['exit_time'] or pd.Timestamp.min, reverse=True)
+                    trade_list = close_orders[:self.trade_history_report_count]
+                    trade_list.reverse()  # 时间正序
+                    
+                    self.logger.info(f"   最终报告交易数: {len(trade_list)}")
+                else:
+                    self.logger.info("   交易所返回空记录")
+            except Exception as e:
+                self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
+        
+        if not trade_list:
+            self.logger.info("   暂无交易记录，跳过报告发送")
+            self.logger.info("=" * 60)
             return
 
-        # 获取最近N笔交易
-        report_count = self.trade_history_report_count
-        recent_trades = self.trades[-report_count:] if len(self.trades) > report_count else self.trades
-
-        # 转换为飞书报告需要的格式
-        trade_list = []
-        for trade in recent_trades:
-            # 计算手续费（从 gross_pnl 和 net_pnl 推算）
-            gross_pnl_btc = trade.gross_pnl / trade.exit_price if trade.exit_price else 0
-            net_pnl_btc = trade.net_pnl / trade.exit_price if trade.exit_price else 0
-            fee_btc = gross_pnl_btc - net_pnl_btc
-
-            trade_list.append({
-                'exit_time': trade.exit_time,
-                'side': trade.side,
-                'entry_price': trade.entry_price,
-                'exit_price': trade.exit_price,
-                'net_pnl_btc': net_pnl_btc,
-                'fee_btc': fee_btc
-            })
-
         # 发送报告
+        self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
+        self.logger.info(f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}")
+        
         try:
-            self.feishu_bot.send_trade_history_report(
+            result = self.feishu_bot.send_trade_history_report(
                 trades=trade_list,
                 total_balance_btc=self.realized_pnl
             )
             self.last_trade_history_report = pd.Timestamp.utcnow()
-            self.logger.info(f"📊 交易历史报告已发送，包含 {len(trade_list)} 笔交易")
+            self.logger.info(f"📊 交易历史报告发送结果: {result}")
+            self.logger.info("=" * 60)
         except Exception as e:
-            self.logger.warning(f"发送交易历史报告失败: {e}")
+            self.logger.warning(f"发送交易历史报告失败: {e}", exc_info=True)
+            self.logger.info("=" * 60)
 
     def _backfill_position_from_exchange(self, ts: pd.Timestamp, price: float):
         """如果交易所存在持仓而本地没有，则补建本地持仓，进入TP/SL逻辑"""

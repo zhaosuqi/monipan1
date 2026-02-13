@@ -25,7 +25,11 @@ class FeishuBot:
 
     def send_message(self, message: str) -> bool:
         """发送普通文本消息"""
-        if not self.enabled or not self.webhook:
+        if not self.enabled:
+            self.logger.debug("飞书未启用 (FEISHU_ENABLED=0)，跳过发送")
+            return False
+        if not self.webhook:
+            self.logger.warning("飞书Webhook未配置 (FEISHU_WEBHOOK为空)，跳过发送")
             return False
 
         try:
@@ -54,7 +58,11 @@ class FeishuBot:
 
     def _send_rich_card(self, card: Dict) -> bool:
         """发送富文本卡片消息"""
-        if not self.enabled or not self.webhook:
+        if not self.enabled:
+            self.logger.debug("飞书未启用 (FEISHU_ENABLED=0)，跳过发送")
+            return False
+        if not self.webhook:
+            self.logger.warning("飞书Webhook未配置 (FEISHU_WEBHOOK为空)，跳过发送")
             return False
 
         try:

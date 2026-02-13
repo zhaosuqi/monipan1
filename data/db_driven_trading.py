@@ -125,10 +125,14 @@ class DBDrivenTrader:
             self.logger.warning(f"飞书启动通知发送失败: {e}")
 
         # 启动时发送一次交易历史报告
+        self.logger.info("=" * 60)
+        self.logger.info("📊 准备发送启动时交易历史报告...")
         try:
             self.trade_engine._send_trade_history_report()
+            self.logger.info("📊 启动时交易历史报告调用完成")
         except Exception as e:
-            self.logger.warning(f"启动时发送交易历史报告失败: {e}")
+            self.logger.warning(f"启动时发送交易历史报告失败: {e}", exc_info=True)
+        self.logger.info("=" * 60)
     
     def _get_engine(self):
         """获取数据库引擎"""
