@@ -411,69 +411,102 @@ class TradeEngine:
             # 内存中没有交易记录，尝试从交易所 API 获取
             self.logger.info("   内存中无交易记录，从交易所获取历史成交...")
             try:
-                trades_from_api = self.exchange.get_user_trades(config.SYMBOL, limit=50)
-                self.logger.info(f"   交易所返回成交记录数: {len(trades_from_api) if trades_from_api else 0}")
+                # 获取更多记录以便配对开仓和平仓
+                trades_from_api = self.exchange.get_user_trades(
+                    config.SYMBOL, limit=200
+                )
+                self.logger.info(
+                    f"   交易所返回成交记录数: "
+                    f"{len(trades_from_api) if trades_from_api else 0}"
+                )
                 
                 if trades_from_api:
-                    # 按订单ID分组，找出平仓订单（有 realizedPnl 的）
                     from collections import defaultdict
+                    
+                    # 按订单ID分组
                     grouped = defaultdict(list)
                     for t in trades_from_api:
                         grouped[t.get('orderId')].append(t)
                     
-                    self.logger.info(f"   订单分组数: {len(grouped)}")
-                    
-                    # 筛选平仓记录（realizedPnl != 0）
-                    close_orders = []
+                    # 汇总每个订单的信息
+                    order_summaries = []
                     for order_id, order_trades in grouped.items():
                         total_pnl = sum(
                             float(t.get('realizedPnl', 0) or 0)
                             for t in order_trades
                         )
-                        if abs(total_pnl) > 0:  # 有实现盈亏的才是平仓
-                            total_fee = sum(
-                                float(t.get('commission', 0) or 0)
-                                for t in order_trades
-                            )
-                            total_qty = sum(
-                                float(t.get('qty', 0) or 0)
-                                for t in order_trades
-                            )
-                            first_trade = order_trades[0]
-                            # SELL平多，BUY平空
-                            side = 'long' if first_trade.get('side') == 'SELL' \
-                                else 'short'
-                            avg_price = float(first_trade.get('price', 0) or 0)
-                            trade_time = first_trade.get('time', 0)
+                        total_fee = sum(
+                            float(t.get('commission', 0) or 0)
+                            for t in order_trades
+                        )
+                        total_qty = sum(
+                            float(t.get('qty', 0) or 0)
+                            for t in order_trades
+                        )
+                        first_trade = order_trades[0]
+                        trade_side = first_trade.get('side')  # BUY or SELL
+                        avg_price = float(first_trade.get('price', 0) or 0)
+                        trade_time = first_trade.get('time', 0)
+                        
+                        order_summaries.append({
+                            'order_id': order_id,
+                            'time': trade_time,
+                            'trade_side': trade_side,
+                            'price': avg_price,
+                            'qty': total_qty,
+                            'pnl': total_pnl,
+                            'fee': total_fee,
+                            'is_close': abs(total_pnl) > 0
+                        })
+                    
+                    # 按时间排序（早到晚）
+                    order_summaries.sort(key=lambda x: x['time'])
+                    
+                    # 分离开仓和平仓订单
+                    # 开仓: BUY开多(pnl=0), SELL开空(pnl=0)
+                    # 平仓: SELL平多(pnl!=0), BUY平空(pnl!=0)
+                    long_opens = []   # BUY且pnl=0 -> 开多
+                    short_opens = []  # SELL且pnl=0 -> 开空
+                    
+                    close_orders = []
+                    
+                    for order in order_summaries:
+                        if not order['is_close']:
+                            # 开仓订单
+                            if order['trade_side'] == 'BUY':
+                                long_opens.append(order)
+                            else:
+                                short_opens.append(order)
+                        else:
+                            # 平仓订单
+                            # SELL平多，找最近的开多订单
+                            # BUY平空，找最近的开空订单
+                            if order['trade_side'] == 'SELL':
+                                position_side = 'long'
+                                opens_list = long_opens
+                            else:
+                                position_side = 'short'
+                                opens_list = short_opens
                             
-                            # 通过realizedPnl反算开仓价格（币本位合约）
-                            # 多单: PnL = qty×(1/entry - 1/exit)
-                            # 空单: PnL = qty×(1/exit - 1/entry)
+                            # 找该平仓之前最近的开仓
                             entry_price = 0
-                            if avg_price > 0 and total_qty > 0:
-                                try:
-                                    if side == 'long':
-                                        # entry = 1/(1/exit - PnL/qty)
-                                        denom = 1/avg_price - total_pnl/total_qty
-                                        if abs(denom) > 1e-12:
-                                            entry_price = 1 / denom
-                                    else:
-                                        # entry = 1/(1/exit + PnL/qty)
-                                        denom = 1/avg_price + total_pnl/total_qty
-                                        if abs(denom) > 1e-12:
-                                            entry_price = 1 / denom
-                                except Exception:
-                                    entry_price = 0
+                            for i in range(len(opens_list) - 1, -1, -1):
+                                if opens_list[i]['time'] < order['time']:
+                                    entry_price = opens_list[i]['price']
+                                    opens_list.pop(i)  # 配对后移除
+                                    break
+                            
+                            exit_time = pd.to_datetime(
+                                order['time'], unit='ms'
+                            ) if order['time'] else None
                             
                             close_orders.append({
-                                'exit_time': pd.to_datetime(
-                                    trade_time, unit='ms'
-                                ) if trade_time else None,
-                                'side': side,
+                                'exit_time': exit_time,
+                                'side': position_side,
                                 'entry_price': entry_price,
-                                'exit_price': avg_price,
-                                'net_pnl_btc': total_pnl,
-                                'fee_btc': total_fee
+                                'exit_price': order['price'],
+                                'net_pnl_btc': order['pnl'],
+                                'fee_btc': order['fee']
                             })
                     
                     self.logger.info(f"   筛选出平仓订单数: {len(close_orders)}")
@@ -494,9 +527,30 @@ class TradeEngine:
             self.logger.info("=" * 60)
             return
 
+        # 输出报告详情到日志
+        self.logger.info("-" * 50)
+        self.logger.info("📋 交易历史报告详情:")
+        for idx, t in enumerate(trade_list, 1):
+            exit_time_str = t['exit_time'].strftime('%m-%d %H:%M') \
+                if t.get('exit_time') else 'N/A'
+            side_str = '多' if t.get('side') == 'long' else '空'
+            entry_p = t.get('entry_price', 0)
+            exit_p = t.get('exit_price', 0)
+            pnl = t.get('net_pnl_btc', 0)
+            fee = t.get('fee_btc', 0)
+            self.logger.info(
+                f"   {idx}. {exit_time_str} | {side_str} | "
+                f"{entry_p:.1f}→{exit_p:.1f} | "
+                f"{pnl:+.6f} BTC | 费:{fee:.6f}"
+            )
+        self.logger.info("-" * 50)
+
         # 发送报告
         self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
-        self.logger.info(f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}")
+        self.logger.info(
+            f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, "
+            f"WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}"
+        )
         
         # 从交易所API获取真实账户余额
         try:
