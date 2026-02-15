@@ -30,6 +30,16 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config import config
+from core.logger import get_logger
+
+logger = get_logger('sync_macd')
+
+# 将 print 重定向到 logger
+original_print = print
+def print(*args, **kwargs):
+    msg = " ".join(map(str, args))
+    logger.info(msg)
+    # original_print(*args, **kwargs) # 可选：同时也打印到控制台，但在后台运行时不需要
 
 try:
     import db_compat
