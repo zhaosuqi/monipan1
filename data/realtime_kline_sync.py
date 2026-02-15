@@ -530,4 +530,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # 确保logger不向 root 传播，以防第三方库(如websockets/binance)配置了stderr handler
+    # 从而导致 debug 日志泄漏到 error.log
+    logger.propagate = False
     main()
