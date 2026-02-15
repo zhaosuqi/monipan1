@@ -267,7 +267,7 @@ class Config:
 
         # 止损止盈 (更新默认值)
         self.STOP_LOSS_POINTS = float(os.getenv('STOP_LOSS_POINTS', '0.0165'))
-        self.TP_LEVELS = json.loads(os.getenv('TP_LEVELS', '[1.0065, 1.012, 1.018, 1.024, 1.03]'))
+        self.TP_LEVELS = json.loads(os.getenv('TP_LEVELS', '[1.006, 1.012, 1.018, 1.024, 1.03]'))
         self.TP_RATIO_PER_LEVEL = float(os.getenv('TP_RATIO_PER_LEVEL', '0.0'))
         self.DRAWDOWN_POINTS = float(os.getenv('DRAWDOWN_POINTS', '0.0002'))
         self.CLOSE_TIME_MINUTES = float(os.getenv('CLOSE_TIME_MINUTES', '9999'))
