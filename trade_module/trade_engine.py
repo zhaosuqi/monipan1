@@ -386,7 +386,7 @@ class TradeEngine:
         trade_list = []
         
         # 优先使用内存中的交易记录
-        if self.trades:
+        if False:
             self.logger.info("   使用内存中的交易记录")
             # 获取最近N笔交易
             report_count = self.trade_history_report_count
@@ -422,7 +422,7 @@ class TradeEngine:
                 
                 if trades_from_api:
                     from collections import defaultdict
-                    
+
                     # 按订单ID分组
                     grouped = defaultdict(list)
                     for t in trades_from_api:
