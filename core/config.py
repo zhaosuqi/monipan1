@@ -233,7 +233,7 @@ class Config:
         self.PRICE_CHANGE_COUNT_B = int(os.getenv('PRICE_CHANGE_COUNT_B', '10'))
         self.PRICE_CHANGE_LIMIT_C = float(os.getenv('PRICE_CHANGE_LIMIT_C', '0.03'))
         self.PRICE_CHANGE_COUNT_C = int(os.getenv('PRICE_CHANGE_COUNT_C', '60'))
-        self.M_PRICE_CHANGE = float(os.getenv('M_PRICE_CHANGE', '0.01'))
+        self.M_PRICE_CHANGE = float(os.getenv('M_PRICE_CHANGE', '0.0025'))
 
         # 4H特殊参数
         self.HIST4_EXTREME_LIMIT = float(os.getenv('HIST4_EXTREME_LIMIT', '9999'))
@@ -266,7 +266,7 @@ class Config:
         self.DATE_TO = os.getenv('DATE_TO', '2024-1-10 23:59:59')
 
         # 止损止盈 (更新默认值)
-        self.STOP_LOSS_POINTS = float(os.getenv('STOP_LOSS_POINTS', '0.016'))
+        self.STOP_LOSS_POINTS = float(os.getenv('STOP_LOSS_POINTS', '0.02'))
         self.TP_LEVELS = json.loads(os.getenv('TP_LEVELS', '[1.006, 1.012, 1.018, 1.024, 1.03]'))
         self.TP_RATIO_PER_LEVEL = float(os.getenv('TP_RATIO_PER_LEVEL', '0.0'))
         self.DRAWDOWN_POINTS = float(os.getenv('DRAWDOWN_POINTS', '0.0002'))
