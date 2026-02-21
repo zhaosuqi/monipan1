@@ -13,10 +13,25 @@ class FeishuBot:
     # 东八区时区
     TZ_EAST8 = timezone(timedelta(hours=8))
 
+    @staticmethod
+    def _resolve_display_asset(symbol: str) -> str:
+        """从交易对中提取用于显示的基础币种，例如 XXXUSD_PERP -> XXX。"""
+        symbol_upper = (symbol or '').upper()
+        if not symbol_upper:
+            return 'ASSET'
+
+        symbol_main = symbol_upper.split('_', 1)[0]
+        for quote_suffix in ('USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'USD'):
+            if symbol_main.endswith(quote_suffix) and len(symbol_main) > len(quote_suffix):
+                return symbol_main[:-len(quote_suffix)]
+
+        return symbol_main
+
     def __init__(self):
         self.logger = get_logger('interaction_module.feishu')
         self.webhook = config.FEISHU_WEBHOOK
         self.enabled = config.FEISHU_ENABLED
+        self.display_asset = self._resolve_display_asset(getattr(config, 'SYMBOL', ''))
 
     @staticmethod
     def _get_now_str() -> str:
@@ -51,10 +66,6 @@ class FeishuBot:
             self.logger.error(f"飞书消息发送异常: {e}")
             return False
 
-    def send_trade_notification(self, signal: Dict) -> bool:
-        """发送交易信号通知（兼容旧接口）"""
-        message = f"交易信号: {signal.get('action')} {signal.get('side')}\n原因: {signal.get('reason')}"
-        return self.send_message(message)
 
     def _send_rich_card(self, card: Dict) -> bool:
         """发送富文本卡片消息"""
@@ -84,36 +95,128 @@ class FeishuBot:
             self.logger.error(f"飞书卡片发送异常: {e}")
             return False
 
-    def send_open_position_notification(
+    def send_open_signal_detected_notification(
+        self,
+        symbol: str,
+        side: str,
+        close_price: float,
+        high_price: float,
+        low_price: float,
+        available_capital: float,
+        capital_asset: str,
+        signal_name: str,
+        ts: Optional[datetime] = None
+    ) -> bool:
+        """
+        发送检测到开仓信号通知（尚未下单）
+        """
+        side_cn = "做多 📈" if side == 'long' else "做空 📉"
+        side_color = "blue" if side == 'long' else "red"
+        time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"检测到开仓信号 🎯 {side_cn}",
+                    "tag": "plain_text"
+                },
+                "template": side_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易对**\n{symbol}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**信号方向**\n{side_cn}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**收盘价**\n${close_price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**最高价**\n${high_price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**最低价**\n${low_price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**可用资金**\n{available_capital:.6f} {capital_asset}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**信号来源**\n{signal_name}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
+    def send_open_order_placed_notification(
         self,
         symbol: str,
         side: str,
         price: float,
         contracts: int,
         signal_name: str,
+        order_id: str,
         ts: Optional[datetime] = None
     ) -> bool:
         """
-        发送开仓通知（富文本卡片）
-
-        Args:
-            symbol: 交易对
-            side: 方向 (long/short)
-            price: 开仓价格
-            contracts: 合约数量
-            signal_name: 信号名称
-            ts: 开仓时间
+        发送开仓挂单通知（富文本卡片）
         """
-        # 中文方向显示
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
-        side_color = "green" if side == 'long' else "red"
-
+        side_color = "blue"
         time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         card = {
             "header": {
                 "title": {
-                    "content": f"开仓通知 {side_cn}",
+                    "content": f"开仓挂单 📝 {side_cn}",
                     "tag": "plain_text"
                 },
                 "template": side_color
@@ -140,14 +243,21 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**开仓价格**\n${price:.2f}"
+                                "content": f"**挂单价格**\n${price:.2f}"
                             }
                         },
                         {
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**合约数量**\n{contracts}张"
+                                "content": f"**挂单数量**\n{contracts}张"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**订单ID**\n{order_id}"
                             }
                         },
                         {
@@ -161,7 +271,206 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**开仓时间**\n{time_str}"
+                                "content": f"**挂单时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
+    def send_open_order_filled_notification(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        contracts: int,
+        signal_name: str,
+        ts: Optional[datetime] = None,
+        tp1_price: Optional[float] = None,
+        sl_price: Optional[float] = None
+    ) -> bool:
+        """
+        发送开仓成交通知（富文本卡片）
+        """
+        side_cn = "做多 📈" if side == 'long' else "做空 📉"
+        side_color = "green" if side == 'long' else "red"
+        time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"开仓成交 ✅ {side_cn}",
+                    "tag": "plain_text"
+                },
+                "template": side_color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易对**\n{symbol}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**方向**\n{side_cn}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**成交价格**\n${price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**成交数量**\n{contracts}张"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**信号来源**\n{signal_name}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**成交时间**\n{time_str}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**一级止盈**\n${tp1_price:.2f}" if tp1_price else "**一级止盈**\n-"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**止损价格**\n${sl_price:.2f}" if sl_price else "**止损价格**\n-"
+                            }
+                        },
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**发送时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)
+
+    def send_open_order_canceled_notification(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        contracts: int,
+        signal_name: str,
+        order_id: str,
+        reason: str,
+        ts: Optional[datetime] = None
+    ) -> bool:
+        """
+        发送开仓挂单撤回通知（未成交）
+        """
+        side_cn = "做多 📈" if side == 'long' else "做空 📉"
+        time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        card = {
+            "header": {
+                "title": {
+                    "content": f"挂单撤回 ↩️ {side_cn}",
+                    "tag": "plain_text"
+                },
+                "template": "orange"
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**交易对**\n{symbol}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**方向**\n{side_cn}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**挂单价格**\n${price:.2f}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**挂单数量**\n{contracts}张"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**订单ID**\n{order_id}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**原因**\n{reason}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**信号来源**\n{signal_name}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**撤单时间**\n{time_str}"
                             }
                         },
                         {
@@ -205,12 +514,12 @@ class FeishuBot:
             contracts: 合约数量
             entry_time: 开仓时间
             close_time: 平仓时间
-            gross_btc: 毛盈亏(BTC)
-            fee_btc: 手续费(BTC)
-            net_btc: 净盈亏(BTC)
+            gross_btc: 毛盈亏(基础币种)
+            fee_btc: 手续费(基础币种)
+            net_btc: 净盈亏(基础币种)
             reason: 平仓原因
             tp_hit: 已触发的止盈级别
-            total_balance_btc: 当前总余额(BTC)
+            total_balance_btc: 当前总余额(基础币种)
         """
         # 调试日志：检查传入的价格
         self.logger.info(f"[飞书平仓通知] entry_price={entry_price:.2f}, close_price={close_price:.2f}")
@@ -309,28 +618,28 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**毛盈亏**\n{gross_btc:+.8f} BTC"
+                                "content": f"**毛盈亏**\n{gross_btc:+.8f} {self.display_asset}"
                             }
                         },
                         {
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**手续费**\n-{fee_btc:.8f} BTC"
+                                "content": f"**手续费**\n-{fee_btc:.8f} {self.display_asset}"
                             }
                         },
                         {
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**净盈亏**\n**{net_btc:+.8f} BTC**"
+                                "content": f"**净盈亏**\n**{net_btc:+.8f} {self.display_asset}**"
                             }
                         },
                         {
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**当前总余额**\n**{total_balance_btc:.6f} BTC** 💰"
+                                "content": f"**当前总余额**\n**{total_balance_btc:.6f} {self.display_asset}** 💰"
                             }
                         }
                     ]
@@ -598,89 +907,6 @@ class FeishuBot:
         }
         return reason_map.get(reason, reason)
 
-    def send_sync_open_notification(
-        self,
-        symbol: str,
-        side: str,
-        price: float,
-        contracts: int,
-        ts: Optional[datetime] = None
-    ) -> bool:
-        """
-        发送同步开仓通知（从币安同步的开仓）
-
-        Args:
-            symbol: 交易对
-            side: 方向 (long/short)
-            price: 开仓价格
-            contracts: 合约数量
-            ts: 开仓时间
-        """
-        side_cn = "做多 📈" if side == 'long' else "做空 📉"
-        side_color = "green" if side == 'long' else "red"
-
-        time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        card = {
-            "header": {
-                "title": {
-                    "content": f"同步开仓 🔄 {side_cn}",
-                    "tag": "plain_text"
-                },
-                "template": side_color
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**交易对**\n{symbol}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**方向**\n{side_cn}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**开仓价格**\n${price:.2f}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**合约数量**\n{contracts}张"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**同步时间**\n{time_str}"
-                            }
-                        },
-                        {
-                            "is_short": False,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**发送时间**\n{self._get_now_str()}"
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
-
-        return self._send_rich_card(card)
 
     def send_system_startup_notification(
         self,
@@ -826,176 +1052,6 @@ class FeishuBot:
 
         return self._send_rich_card(card)
 
-    def send_sync_close_notification(
-        self,
-        symbol: str,
-        side: str,
-        entry_price: float,
-        close_price: float,
-        contracts: int,
-        entry_time: datetime,
-        close_time: datetime,
-        gross_usd: float,
-        fee_usd: float,
-        net_usd: float,
-        net_btc: float,
-        total_balance_btc: float = 0.0
-    ) -> bool:
-        """
-        发送同步平仓通知（从币安同步的平仓）
-
-        Args:
-            symbol: 交易对
-            side: 方向
-            entry_price: 开仓价格
-            close_price: 平仓价格
-            contracts: 平仓合约数量
-            entry_time: 开仓时间
-            close_time: 平仓时间
-            gross_usd: 毛盈亏(USD)
-            fee_usd: 手续费(USD)
-            net_usd: 净盈亏(USD)
-            net_btc: 净盈亏(BTC)
-            total_balance_btc: 当前总余额(BTC)
-        """
-        side_cn = "做多" if side == 'long' else "做空"
-
-        if net_usd > 0:
-            pnl_color = "green"
-            pnl_icon = "盈利 ✅"
-        elif net_usd < 0:
-            pnl_color = "red"
-            pnl_icon = "亏损 ❌"
-        else:
-            pnl_color = "grey"
-            pnl_icon = "平手 ➖"
-
-        # 计算持仓时长
-        duration = close_time - entry_time
-        hours, remainder = divmod(duration.total_seconds(), 3600)
-        minutes, _ = divmod(remainder, 60)
-        duration_str = f"{int(hours)}h{int(minutes)}m"
-
-        time_str = close_time.strftime("%Y-%m-%d %H:%M:%S")
-
-        card = {
-            "header": {
-                "title": {
-                    "content": f"同步平仓 🔄 - {pnl_icon}",
-                    "tag": "plain_text"
-                },
-                "template": pnl_color
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**交易对**\n{symbol}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**方向**\n{side_cn}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**开仓价**\n${entry_price:.2f}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**平仓价**\n${close_price:.2f}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**数量**\n{contracts}张"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**持仓时长**\n{duration_str}"
-                            }
-                        }
-                    ]
-                },
-                {
-                    "tag": "hr"
-                },
-                {
-                    "tag": "div",
-                    "fields": [
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**毛盈亏**\n${gross_usd:+.2f}"
-                            }
-                        },
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**手续费**\n-${fee_usd:.2f}"
-                            }
-                        },
-                        {
-                            "is_short": False,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**净盈亏**\n**${net_usd:+.2f} ({net_btc:+.6f} BTC)**"
-                            }
-                        },
-                        {
-                            "is_short": False,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**当前总余额**\n**{total_balance_btc:.6f} BTC** 💰"
-                            }
-                        }
-                    ]
-                },
-                {
-                    "tag": "hr"
-                },
-                {
-                    "tag": "div",
-                    "fields": [
-                        {
-                            "is_short": True,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**同步时间**\n{time_str}"
-                            }
-                        },
-                        {
-                            "is_short": False,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**发送时间**\n{self._get_now_str()}"
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
-
-        return self._send_rich_card(card)
 
     def send_trade_history_report(
         self,
@@ -1011,9 +1067,9 @@ class FeishuBot:
                 - side: 方向 (long/short)
                 - entry_price: 开仓价格
                 - exit_price: 平仓价格
-                - net_pnl_btc: 净盈亏(BTC)
-                - fee_btc: 手续费(BTC)
-            total_balance_btc: 当前总余额(BTC)
+                - net_pnl_btc: 净盈亏(基础币种)
+                - fee_btc: 手续费(基础币种)
+            total_balance_btc: 当前总余额(基础币种)
         """
         if not trades:
             return False
@@ -1055,7 +1111,7 @@ class FeishuBot:
             trade_lines.append(
                 f"{i}. {time_str} | {side_cn} | "
                 f"{entry_price:.1f}→{exit_price:.1f} | "
-                f"{pnl_sign}{net_pnl:.6f} BTC | 费:{fee:.6f}"
+                f"{pnl_sign}{net_pnl:.6f} {self.display_asset} | 费:{fee:.6f}"
             )
 
         trades_content = "\n".join(trade_lines) if trade_lines else "暂无交易记录"
@@ -1090,14 +1146,14 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**总盈亏**\n{total_pnl:+.6f} BTC"
+                                "content": f"**总盈亏**\n{total_pnl:+.6f} {self.display_asset}"
                             }
                         },
                         {
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**总手续费**\n-{total_fee:.6f} BTC"
+                                "content": f"**总手续费**\n-{total_fee:.6f} {self.display_asset}"
                             }
                         }
                     ]
@@ -1122,7 +1178,7 @@ class FeishuBot:
                             "is_short": True,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**当前余额**\n{total_balance_btc:.6f} BTC"
+                                "content": f"**当前余额**\n{total_balance_btc:.6f} {self.display_asset}"
                             }
                         },
                         {
@@ -1138,4 +1194,3 @@ class FeishuBot:
         }
 
         return self._send_rich_card(card)
-
