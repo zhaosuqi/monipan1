@@ -110,7 +110,7 @@ class SignalCalculator:
 
         self.logger.info("信号计算器初始化完成,已配置时间窗口移动平均值")
 
-    def calculate_open_signal(self, indicators: Dict[str, Any], row_prev=None, state_prices=None) -> Optional[Signal]:
+    def calculate_open_signal(self, indicators: Dict[str, Any], row_prev=None, row_list=None, state_prices=None) -> Optional[Signal]:
         """
         计算开仓信号 - 基于MACD V5.0算法
 
@@ -244,6 +244,7 @@ class SignalCalculator:
             hist1d, dif1d, dea1d,
             row,
             row_prev,  # 传递前一行数据
+            row_list,
             state_prices,  # 传递价格历史
             ts_str  # 传递时间戳用于日志
         )
@@ -276,6 +277,7 @@ class SignalCalculator:
             hist1d, dif1d, dea1d,
             row,
             row_prev,  # 传递前一行数据
+            row_list,  # 传递历史K线
             state_prices  # 传递价格历史
         )
 
@@ -316,6 +318,7 @@ class SignalCalculator:
         hist1d, dif1d, dea1d,
         row,
         row_prev=None,
+        row_list=None,
         state_prices=None,
         ts_str=''
     ) -> tuple:
@@ -327,15 +330,37 @@ class SignalCalculator:
         """
         is_long = True
         reasons = []
+        history_rows = row_list or []
 
         # ========== 价格变化验证 (参考 macd_refactor.py) ==========
         # M_PRICE_CHANGE - 防止跳空开仓
-        if row_prev is not None and config.M_PRICE_CHANGE != 0:
-            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
-            if abs(row['close'] - row_prev['close']) > price_change_limit:
+        if config.M_PRICE_CHANGE != 0 and config.M_PRICE_CHANGE_MINUTES > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES]
+            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else r['close'] * config.M_PRICE_CHANGE
+            if abs(row['close'] - r['close']) > price_change_limit:
                 is_long = False
-                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+        if is_long and config.M_PRICE_CHANGE_B != 0 and config.M_PRICE_CHANGE_MINUTES_B > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_B:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_B]
+            price_change_limit = config.M_PRICE_CHANGE_B if config.M_PRICE_CHANGE_B > 1 else r['close'] * config.M_PRICE_CHANGE_B
+            if abs(row['close'] - r['close']) > price_change_limit:
+                is_long = False
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+        if is_long and config.M_PRICE_CHANGE_C != 0 and config.M_PRICE_CHANGE_MINUTES_C > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_C:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_C]
+            price_change_limit = config.M_PRICE_CHANGE_C if config.M_PRICE_CHANGE_C > 1 else r['close'] * config.M_PRICE_CHANGE_C
+            if abs(row['close'] - r['close']) > price_change_limit:
+                is_long = False
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+        # if row_prev is not None and config.M_PRICE_CHANGE != 0:
+        #     price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
+        #     if abs(row['close'] - row_prev['close']) > price_change_limit:
+        #         is_long = False
+        #         reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
+        #         logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
 
         # PRICE_CHANGE_COUNT
         if state_prices is not None and config.PRICE_CHANGE_COUNT > 0:
@@ -656,6 +681,7 @@ class SignalCalculator:
         hist1d, dif1d, dea1d,
         row,
         row_prev=None,
+        row_list=None,
         state_prices=None
     ) -> tuple:
         """
@@ -666,19 +692,43 @@ class SignalCalculator:
         """
         is_short = True
         reasons = []
+        history_rows = row_list or []
         if '2024-01-03 12:01:59' in str(row.get('close_time')):
             self.logger.info(row)
             self.logger.info(row_prev)
             self.logger.info("=" * 80)
 
         # ========== 价格变化验证 (参考 macd_refactor.py) ==========
-        # M_PRICE_CHANGE - 防止跳空开仓
-        if row_prev is not None and config.M_PRICE_CHANGE != 0:
-            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
-            if abs(row['close'] - row_prev['close']) > price_change_limit:
+        if config.M_PRICE_CHANGE != 0 and config.M_PRICE_CHANGE_MINUTES > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES]
+            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else r['close'] * config.M_PRICE_CHANGE
+            if abs(row['close'] - r['close']) > price_change_limit:
                 is_short = False
-                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+        if is_short and config.M_PRICE_CHANGE_B != 0 and config.M_PRICE_CHANGE_MINUTES_B > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_B:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_B]
+            price_change_limit = config.M_PRICE_CHANGE_B if config.M_PRICE_CHANGE_B > 1 else r['close'] * config.M_PRICE_CHANGE_B
+            if abs(row['close'] - r['close']) > price_change_limit:
+                is_short = False
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+
+        if is_short and config.M_PRICE_CHANGE_C != 0 and config.M_PRICE_CHANGE_MINUTES_C > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_C:
+            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_C]
+            price_change_limit = config.M_PRICE_CHANGE_C if config.M_PRICE_CHANGE_C > 1 else r['close'] * config.M_PRICE_CHANGE_C
+            if abs(row['close'] - r['close']) > price_change_limit:
+                is_short = False
+                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
+                logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
+
+        # M_PRICE_CHANGE - 防止跳空开仓
+        # if row_prev is not None and config.M_PRICE_CHANGE != 0:
+        #     price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
+        #     if abs(row['close'] - row_prev['close']) > price_change_limit:
+        #         is_short = False
+        #         reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
+        #         logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
 
         # PRICE_CHANGE_COUNT
         if state_prices is not None and config.PRICE_CHANGE_COUNT > 0:

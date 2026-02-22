@@ -94,6 +94,8 @@ class DBDrivenTrader:
         
         # 前一行数据（用于信号计算）
         self.prev_row: Optional[Dict] = None
+        self.rowList: List[Dict] = []
+
         
         # 初始化信号计算器
         self.signal_calculator = SignalCalculator()
@@ -262,6 +264,7 @@ class DBDrivenTrader:
                     self.price_history.pop(0)
             
             self.prev_row = row_dict
+            self.rowList.append(row_dict)
         
         self.logger.info("✓ 预热完成")
         return df
@@ -374,6 +377,7 @@ class DBDrivenTrader:
         signal = self.signal_calculator.calculate_open_signal(
             indicators=row,
             row_prev=self.prev_row,
+            row_list=self.rowList,
             state_prices=state_prices_series
         )
         
@@ -392,6 +396,7 @@ class DBDrivenTrader:
         
         # 更新前一行数据
         self.prev_row = row
+        self.rowList.append(row)
         # 保存时间，直接使用原始格式并标准化
         self.last_processed_time = str(open_time).replace('T', ' ')[:19]
         self.logger.debug(f"更新 last_processed_time = {self.last_processed_time}")
