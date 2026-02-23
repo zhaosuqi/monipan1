@@ -3,377 +3,507 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>交易参数 - BTCUSD_PERP</title>
+    <title>交易参数 - 交易监控系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg-dark: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-input: #0f172a;
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255,255,255,0.7);
+            --border-color: rgba(255,255,255,0.1);
+            --accent-color: #f0b90b;
+            --accent-hover: #f8d12f;
+            --success-color: #00c853;
+            --danger-color: #ff5252;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #0b0e11;
-            color: #eaecef;
+            background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-card) 100%);
             min-height: 100vh;
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         }
 
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 24px;
-            background: #181a20;
-            border-bottom: 1px solid #2b3139;
-            position: sticky;
-            top: 0;
-            z-index: 100;
+        .navbar {
+            background: rgba(0,0,0,0.3) !important;
+            border-bottom: 1px solid var(--border-color);
         }
 
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .logo {
-            font-size: 20px;
-            font-weight: 700;
-            color: #f0b90b;
-            text-decoration: none;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 8px;
+        .navbar-brand {
+            color: var(--accent-color) !important;
+            font-weight: 600;
         }
 
         .nav-link {
-            padding: 8px 16px;
-            color: #848e9c;
-            text-decoration: none;
-            font-size: 14px;
-            border-radius: 4px;
-            transition: all 0.2s;
+            color: var(--text-secondary) !important;
         }
 
-        .nav-link:hover {
-            color: #eaecef;
-            background: #2b3139;
+        .nav-link:hover, .nav-link.active {
+            color: var(--text-primary) !important;
         }
 
-        .nav-link.active {
-            color: #f0b90b;
-            background: rgba(240, 185, 11, 0.1);
-        }
-
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-
-        .refresh-btn {
-            padding: 8px 16px;
-            background: #f0b90b;
-            color: #181a20;
-            border: none;
-            border-radius: 4px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .refresh-btn:hover {
-            background: #f8d56b;
-        }
-
-        .refresh-btn:disabled {
-            background: #2b3139;
-            color: #848e9c;
-            cursor: not-allowed;
-        }
-
-        .last-update {
-            font-size: 12px;
-            color: #848e9c;
-        }
-
-        .main-content {
-            padding: 24px;
+        .container-main {
+            padding: 20px;
             max-width: 1400px;
             margin: 0 auto;
         }
 
-        .page-title {
-            font-size: 24px;
-            font-weight: 600;
-            margin-bottom: 24px;
-            color: #eaecef;
-        }
-
-        .params-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 20px;
-        }
-
-        .param-card {
-            background: #181a20;
-            border: 1px solid #2b3139;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-
-        .param-card-header {
-            padding: 16px;
-            background: #1e2329;
-            border-bottom: 1px solid #2b3139;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .param-card-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: #f0b90b;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .param-card-icon {
-            width: 20px;
-            height: 20px;
-            color: #f0b90b;
-        }
-
-        .param-list {
-            padding: 12px;
-        }
-
-        .param-item {
+        .page-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 12px;
-            border-bottom: 1px solid #2b3139;
-            transition: background 0.2s;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
         }
 
-        .param-item:last-child {
-            border-bottom: none;
+        .page-header h1 {
+            font-size: 1.5rem;
+            margin: 0;
+            color: var(--text-primary);
         }
 
-        .param-item:hover {
-            background: #1e2329;
-            border-radius: 4px;
+        .btn-back {
+            background: transparent;
+            border: 1px solid var(--accent-color);
+            color: var(--accent-color);
+            padding: 6px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            transition: all 0.3s;
         }
 
-        .param-name {
-            font-size: 13px;
-            color: #848e9c;
+        .btn-back:hover {
+            background: var(--accent-color);
+            color: var(--bg-dark);
         }
 
-        .param-value {
-            font-size: 13px;
-            font-weight: 500;
-            color: #eaecef;
-            font-family: 'SF Mono', Monaco, monospace;
+        .card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 15px;
         }
 
-        .param-value.boolean-true {
-            color: #0ecb81;
-        }
-
-        .param-value.boolean-false {
-            color: #f6465d;
-        }
-
-        .param-value.number {
-            color: #f0b90b;
-        }
-
-        .param-value.string {
-            color: #2ebd85;
-        }
-
-        .loading {
+        .card-header {
+            background: rgba(0,0,0,0.2);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 15px;
+            cursor: pointer;
             display: flex;
-            justify-content: center;
+            justify-content: space-between;
             align-items: center;
-            height: 300px;
+            color: var(--text-primary);
+            font-weight: 500;
         }
 
-        .loading-spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid #2b3139;
-            border-top-color: #f0b90b;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
+        .card-header:hover {
+            background: rgba(0,0,0,0.3);
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        .card-body {
+            padding: 15px;
         }
 
-        .error-message {
-            padding: 24px;
-            text-align: center;
-            color: #f6465d;
-            font-size: 14px;
+        .param-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 10px;
         }
 
-        .badge {
-            display: inline-block;
-            padding: 2px 6px;
-            font-size: 11px;
-            border-radius: 3px;
-            font-weight: 600;
+        .param-item {
+            flex: 1;
+            min-width: 200px;
+            max-width: calc(25% - 15px);
         }
 
-        .badge-enabled {
-            background: rgba(14, 203, 129, 0.15);
-            color: #0ecb81;
-        }
-
-        .badge-disabled {
-            background: rgba(246, 70, 93, 0.15);
-            color: #f6465d;
+        @media (max-width: 1200px) {
+            .param-item {
+                max-width: calc(33.333% - 15px);
+            }
         }
 
         @media (max-width: 768px) {
-            .params-grid {
-                grid-template-columns: 1fr;
+            .param-item {
+                max-width: calc(50% - 15px);
             }
+        }
 
-            .header {
-                flex-wrap: wrap;
-                gap: 12px;
+        @media (max-width: 576px) {
+            .param-item {
+                max-width: 100%;
             }
+        }
 
-            .main-content {
-                padding: 16px;
-            }
+        .param-label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .param-value {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            cursor: not-allowed;
+        }
+
+        .param-value.text-success {
+            color: var(--success-color) !important;
+            border-color: rgba(0,200,83,0.3);
+        }
+
+        .param-value.text-danger {
+            color: var(--danger-color) !important;
+            border-color: rgba(255,82,82,0.3);
+        }
+
+        .param-value:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .error-message {
+            background: rgba(255,82,82,0.1);
+            border: 1px solid rgba(255,82,82,0.3);
+            color: var(--danger-color);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .badge-live {
+            background: var(--success-color);
+            color: #000;
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 10px;
+        }
+
+        .user-info {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .logout-btn {
+            color: var(--danger-color);
+            text-decoration: none;
+            margin-left: 15px;
+            font-size: 0.875rem;
+        }
+
+        .logout-btn:hover {
+            color: #ff7575;
+        }
+
+        .refresh-hint {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .float-end i {
+            transition: transform 0.3s;
+        }
+
+        .collapsed .float-end i {
+            transform: rotate(-90deg);
         }
     </style>
 </head>
 <body>
-    <header class="header">
-        <div class="header-left">
-            <a href="/" class="logo">BTCUSD_PERP</a>
-            <nav class="nav-links">
-                <a href="/" class="nav-link">K线图</a>
-                <a href="/params" class="nav-link active">交易参数</a>
-            </nav>
-        </div>
-        <div class="header-right">
-            <span class="last-update" id="lastUpdate">加载中...</span>
-            <button class="refresh-btn" id="refreshBtn" onclick="loadParams()">刷新</button>
-        </div>
-    </header>
-
-    <main class="main-content">
-        <h1 class="page-title">交易参数配置</h1>
-        <div class="params-grid" id="paramsGrid">
-            <div class="loading">
-                <div class="loading-spinner"></div>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-graph-up-arrow"></i> 交易监控系统
+            </a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">K线图表</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/params">交易参数</a>
+                    </li>
+                </ul>
+                <div class="d-flex align-items-center">
+                    <span class="user-info">
+                        <i class="bi bi-person-circle"></i> 186****8001
+                    </span>
+                    <a href="/logout" class="logout-btn">
+                        <i class="bi bi-box-arrow-right"></i> 退出
+                    </a>
+                </div>
             </div>
         </div>
-    </main>
+    </nav>
 
+    <div class="container-main">
+        <div class="page-header">
+            <h1><i class="bi bi-sliders"></i> 交易参数配置</h1>
+            <a href="/" class="btn-back">
+                <i class="bi bi-arrow-left"></i> 返回图表
+            </a>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner-border text-warning" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">加载参数中...</p>
+        </div>
+
+        <div id="error" class="error-message" style="display: none;">
+            <i class="bi bi-exclamation-triangle"></i> <span id="errorText">加载失败</span>
+        </div>
+
+        <div id="paramsContainer" style="display: none;">
+            <!-- 动态生成的参数卡片 -->
+        </div>
+
+        <p class="refresh-hint">
+            <i class="bi bi-info-circle"></i> 参数从配置实时读取，刷新页面可获取最新值
+        </p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // 格式化参数值
-        function formatValue(value) {
-            if (typeof value === 'boolean') {
-                return {
-                    text: value ? '启用' : '禁用',
-                    class: value ? 'boolean-true' : 'boolean-false'
-                };
-            }
+        // 参数分组配置
+        const paramGroups = {
+            '基础配置': [
+                { key: '交易对', label: '交易对' },
+                { key: 'K线间隔', label: 'K线间隔' },
+                { key: '回测模式', label: '回测模式' },
+                { key: '数据库模拟', label: '数据库模拟' }
+            ],
+            '仓位配置': [
+                { key: '初始资金(BTC)', label: '初始资金 (BTC)' },
+                { key: '合约名义价值(USD)', label: '合约名义价值 (USD)' },
+                { key: '杠杆倍数', label: '杠杆倍数' },
+                { key: '仓位名义价值', label: '仓位名义价值' }
+            ],
+            'MACD指标参数': [
+                { key: 'Fast周期', label: 'Fast 周期' },
+                { key: 'Slow周期', label: 'Slow 周期' },
+                { key: 'Signal周期', label: 'Signal 周期' }
+            ],
+            'T0参数-15分钟': [
+                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
+                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
+                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
+                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
+                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
+                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
+            ],
+            'T0参数-1小时': [
+                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
+                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
+                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
+                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
+                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
+                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
+            ],
+            'T0参数-4小时': [
+                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
+                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
+                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
+                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
+                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
+                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
+            ],
+            'T0参数-1天': [
+                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
+                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
+                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
+                { key: 'DIF下限', label: 'DIF 下限', type: 'success' }
+            ],
+            '均值参数-第一组(15m)': [
+                { key: 'HIST均值数量', label: 'HIST 均值数量' },
+                { key: 'HIST均值限制', label: 'HIST 均值限制' },
+                { key: 'DIF均值数量', label: 'DIF 均值数量' },
+                { key: 'DIF均值限制', label: 'DIF 均值限制' },
+                { key: 'DEA均值数量', label: 'DEA 均值数量' },
+                { key: 'DEA均值限制', label: 'DEA 均值限制' }
+            ],
+            '均值参数-第一组(1h)': [
+                { key: 'HIST均值数量', label: 'HIST 均值数量' },
+                { key: 'HIST均值限制', label: 'HIST 均值限制' },
+                { key: 'DIF均值数量', label: 'DIF 均值数量' },
+                { key: 'DIF均值限制', label: 'DIF 均值限制' },
+                { key: 'DEA均值数量', label: 'DEA 均值数量' },
+                { key: 'DEA均值限制', label: 'DEA 均值限制' }
+            ],
+            '均值参数-第一组(4h)': [
+                { key: 'HIST均值数量', label: 'HIST 均值数量' },
+                { key: 'HIST均值限制', label: 'HIST 均值限制' },
+                { key: 'DIF均值数量', label: 'DIF 均值数量' },
+                { key: 'DIF均值限制', label: 'DIF 均值限制' },
+                { key: 'DEA均值数量', label: 'DEA 均值数量' },
+                { key: 'DEA均值限制', label: 'DEA 均值限制' }
+            ],
+            '均值参数-第二组(15m)': [
+                { key: 'HIST均值数量', label: 'HIST 均值数量' },
+                { key: 'HIST均值限制', label: 'HIST 均值限制' },
+                { key: 'DIF均值数量', label: 'DIF 均值数量' },
+                { key: 'DIF均值限制', label: 'DIF 均值限制' },
+                { key: 'DEA均值数量', label: 'DEA 均值数量' },
+                { key: 'DEA均值限制', label: 'DEA 均值限制' }
+            ],
+            '均值参数-第二组(1h)': [
+                { key: 'HIST均值数量', label: 'HIST 均值数量' },
+                { key: 'HIST均值限制', label: 'HIST 均值限制' },
+                { key: 'DIF均值数量', label: 'DIF 均值数量' },
+                { key: 'DIF均值限制', label: 'DIF 均值限制' },
+                { key: 'DEA均值数量', label: 'DEA 均值数量' },
+                { key: 'DEA均值限制', label: 'DEA 均值限制' }
+            ],
+            '止盈止损': [
+                { key: '止损比例', label: '止损比例' },
+                { key: '止盈级别', label: '止盈级别' },
+                { key: '回撤比例', label: '回撤比例' },
+                { key: '止损持仓时间', label: '止损持仓时间 (分钟)' }
+            ],
+            '价格变化参数': [
+                { key: '价格变化限制A', label: '价格变化限制 A' },
+                { key: '价格变化计数A', label: '价格变化计数 A' },
+                { key: '价格变化限制B', label: '价格变化限制 B' },
+                { key: '价格变化计数B', label: '价格变化计数 B' },
+                { key: '分钟价格变化A', label: '分钟价格变化 A' },
+                { key: '分钟数A', label: '分钟数 A' },
+                { key: '分钟价格变化B', label: '分钟价格变化 B' },
+                { key: '分钟数B', label: '分钟数 B' }
+            ],
+            'T1参数': [
+                { key: 'T0_HIST变化', label: 'T0_HIST 变化' },
+                { key: 'T0_DIF变化', label: 'T0_DIF 变化' },
+                { key: 'HIST15限制', label: 'HIST15 限制' },
+                { key: 'HIST15最大', label: 'HIST15 最大' },
+                { key: 'DIF4限制', label: 'DIF4 限制' }
+            ],
+            '特殊参数': [
+                { key: '4H极端限制', label: '4H 极端限制' },
+                { key: '4H中性区间', label: '4H 中性区间' },
+                { key: '启用MA5/MA10', label: '启用 MA5/MA10' },
+                { key: 'T0锁仓', label: 'T0 锁仓' }
+            ],
+            '手续费': [
+                { key: 'Maker费率', label: 'Maker 费率' },
+                { key: 'Taker费率', label: 'Taker 费率' },
+                { key: '默认费率', label: '默认费率' },
+                { key: '开仓类型', label: '开仓类型' }
+            ]
+        };
 
-            if (typeof value === 'number') {
-                // 如果是整数直接显示
-                if (Number.isInteger(value)) {
-                    return { text: value.toString(), class: 'number' };
-                }
-                // 小数保留合适位数
-                return { text: value.toFixed(6).replace(/\.?0+$/, ''), class: 'number' };
-            }
+        let paramsData = {};
 
-            if (Array.isArray(value)) {
-                return { text: JSON.stringify(value), class: 'string' };
-            }
-
-            return { text: String(value), class: 'string' };
-        }
-
-        // 渲染参数卡片
-        function renderParamCard(category, params) {
-            const items = Object.entries(params).map(([name, value]) => {
-                const formatted = formatValue(value);
-                return `
-                    <div class="param-item">
-                        <span class="param-name">${name}</span>
-                        <span class="param-value ${formatted.class}">${formatted.text}</span>
-                    </div>
-                `;
-            }).join('');
-
-            return `
-                <div class="param-card">
-                    <div class="param-card-header">
-                        <svg class="param-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"/>
-                            <path d="M12 1v6m0 6v6m4.22-10.22l4.24-4.24M6.34 17.66l-4.24 4.24M23 12h-6m-6 0H1m20.24 4.24l-4.24-4.24M6.34 6.34L2.1 2.1"/>
-                        </svg>
-                        <span class="param-card-title">${category}</span>
-                    </div>
-                    <div class="param-list">
-                        ${items}
-                    </div>
-                </div>
-            `;
-        }
-
-        // 加载参数
         async function loadParams() {
-            const refreshBtn = document.getElementById('refreshBtn');
-            const paramsGrid = document.getElementById('paramsGrid');
-            const lastUpdate = document.getElementById('lastUpdate');
-
-            refreshBtn.disabled = true;
-            refreshBtn.textContent = '加载中...';
-
             try {
                 const response = await fetch('/api/config');
                 const result = await response.json();
 
                 if (result.success) {
-                    const cards = Object.entries(result.data).map(([category, params]) => {
-                        return renderParamCard(category, params);
-                    }).join('');
-
-                    paramsGrid.innerHTML = cards;
-                    lastUpdate.textContent = '更新于: ' + new Date().toLocaleString('zh-CN');
+                    paramsData = result.data;
+                    renderParams();
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('paramsContainer').style.display = 'block';
                 } else {
-                    paramsGrid.innerHTML = `<div class="error-message">加载失败: ${result.error || '未知错误'}</div>`;
+                    throw new Error(result.error || '加载失败');
                 }
             } catch (error) {
-                paramsGrid.innerHTML = `<div class="error-message">加载失败: ${error.message}</div>`;
-            } finally {
-                refreshBtn.disabled = false;
-                refreshBtn.textContent = '刷新';
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('errorText').textContent = error.message;
             }
         }
 
-        // 页面加载时自动加载
-        document.addEventListener('DOMContentLoaded', loadParams);
+        function renderParams() {
+            const container = document.getElementById('paramsContainer');
+            container.innerHTML = '';
 
-        // 每30秒自动刷新
-        setInterval(loadParams, 30000);
+            Object.entries(paramGroups).forEach(([groupName, fields]) => {
+                const groupData = paramsData[groupName];
+                if (!groupData) return;
+
+                const card = document.createElement('div');
+                card.className = 'card';
+
+                const cardId = 'card_' + groupName.replace(/[^a-zA-Z0-9]/g, '_');
+
+                card.innerHTML = `
+                    <div class="card-header" data-bs-toggle="collapse" data-bs-target="#${cardId}">
+                        <span>${groupName}</span>
+                        <span class="float-end"><i class="bi bi-chevron-down"></i></span>
+                    </div>
+                    <div class="collapse show" id="${cardId}">
+                        <div class="card-body">
+                            <div class="param-row">
+                                ${fields.map(field => {
+                                    const value = groupData[field.key];
+                                    const typeClass = field.type ? `text-${field.type}` : '';
+                                    return `
+                                        <div class="param-item">
+                                            <label class="param-label">${field.label}</label>
+                                            <input type="text" class="param-value ${typeClass}" value="${formatValue(value)}" readonly>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                container.appendChild(card);
+            });
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) return '-';
+            if (typeof value === 'boolean') return value ? '是' : '否';
+            if (Array.isArray(value)) return JSON.stringify(value);
+            return String(value);
+        }
+
+        // 页面加载时获取参数
+        loadParams();
+
+        // 恢复折叠状态
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.collapse').forEach(el => {
+                const id = el.id;
+                if (!id) return;
+
+                const state = localStorage.getItem('param_collapse_' + id);
+                if (state === 'hidden') {
+                    el.classList.remove('show');
+                } else if (state === 'shown') {
+                    el.classList.add('show');
+                }
+
+                el.addEventListener('hidden.bs.collapse', () => {
+                    localStorage.setItem('param_collapse_' + id, 'hidden');
+                });
+                el.addEventListener('shown.bs.collapse', () => {
+                    localStorage.setItem('param_collapse_' + id, 'shown');
+                });
+            });
+        });
     </script>
 </body>
 </html>

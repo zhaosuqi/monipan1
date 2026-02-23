@@ -9,11 +9,18 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 先加载 .env 文件
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
+import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
-from flask import Flask, jsonify, render_template, request
+import requests
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for
 
 from core.config import config
 from core.logger import get_logger
@@ -21,10 +28,178 @@ from core.logger import get_logger
 logger = get_logger('kline_viewer')
 
 app = Flask(__name__, template_folder='templates')
-app.config['SECRET_KEY'] = 'kline-viewer-secret'
+app.config['SECRET_KEY'] = 'kline-viewer-secret-change-this-in-production'
+
+# 登录配置
+ALLOWED_PHONES = config.ALLOWED_PHONES  # 从配置读取白名单列表
+VERIFICATION_CODE_EXPIRY = 120  # 2分钟
+SESSION_LIFETIME = 3600  # 1小时
+
+# 验证码存储 {phone: {'code': str, 'expires': datetime, 'last_sent': datetime}}
+verification_codes = {}
+
+# 发送频率限制（秒）- 3分钟
+SEND_CODE_INTERVAL = 180
 
 # 数据库路径
 DB_PATH = config.HIST_DB_PATH
+
+
+def login_required(f):
+    """登录验证装饰器"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            return redirect(url_for('login_page'))
+        # 检查session是否过期
+        if 'login_time' in session:
+            login_time = datetime.fromisoformat(session['login_time'])
+            if datetime.now() - login_time > timedelta(seconds=SESSION_LIFETIME):
+                session.clear()
+                return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.route('/login', methods=['GET'])
+def login_page():
+    """登录页面"""
+    if 'logged_in' in session:
+        return redirect(url_for('index'))
+    return render_template('login.html')
+
+
+@app.route('/api/send_code', methods=['POST'])
+def send_verification_code():
+    """发送验证码"""
+    data = request.get_json()
+    phone = data.get('phone', '').strip()
+
+    if phone not in ALLOWED_PHONES:
+        return jsonify({'success': False, 'error': '手机号未授权'}), 403
+
+    # 检查发送频率限制（3分钟）
+    stored = verification_codes.get(phone)
+    if stored and 'last_sent' in stored:
+        elapsed = (datetime.now() - stored['last_sent']).total_seconds()
+        if elapsed < SEND_CODE_INTERVAL:
+            remaining = int(SEND_CODE_INTERVAL - elapsed)
+            return jsonify({
+                'success': False,
+                'error': f'请{remaining}秒后再试',
+                'retry_after': remaining
+            }), 429
+
+    # 生成6位随机验证码
+    code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+
+    # 存储验证码，2分钟过期
+    expires = datetime.now() + timedelta(seconds=VERIFICATION_CODE_EXPIRY)
+    verification_codes[phone] = {
+        'code': code,
+        'expires': expires,
+        'last_sent': datetime.now()
+    }
+
+    # 通过飞书发送验证码（强制发送，不依赖 FEISHU_ENABLED 开关）
+    message = f"【验证码】您的登录验证码是：{code}，有效期2分钟，请勿泄露给他人。"
+
+    # 直接调用飞书 API 发送
+    success = False
+    if config.FEISHU_WEBHOOK:
+        try:
+            response = requests.post(
+                config.FEISHU_WEBHOOK,
+                json={"msg_type": "text", "content": {"text": message}},
+                timeout=5
+            )
+            success = response.status_code == 200
+        except Exception as e:
+            logger.error(f"飞书发送失败: {e}")
+
+    if success:
+        logger.info(f"验证码已发送至飞书，手机号: {phone[:3]}****{phone[-4:]}")
+        return jsonify({
+            'success': True,
+            'message': '验证码已发送，请查看飞书消息',
+            'expires_in': VERIFICATION_CODE_EXPIRY,
+            'interval': SEND_CODE_INTERVAL
+        })
+    else:
+        logger.error(f"飞书发送验证码失败")
+        # 验证码只发送到飞书，不返回给前台
+        return jsonify({
+            'success': False,
+            'error': '验证码发送失败，请检查飞书配置或稍后重试'
+        }), 500
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    """登录验证"""
+    data = request.get_json()
+    phone = data.get('phone', '').strip()
+    code = data.get('code', '').strip()
+
+    if phone not in ALLOWED_PHONES:
+        return jsonify({'success': False, 'error': '手机号未授权'}), 403
+
+    # 验证验证码
+    stored = verification_codes.get(phone)
+    if not stored:
+        return jsonify({'success': False, 'error': '请先获取验证码'}), 400
+
+    if datetime.now() > stored['expires']:
+        return jsonify({'success': False, 'error': '验证码已过期，请重新获取'}), 400
+
+    if code != stored['code']:
+        return jsonify({'success': False, 'error': '验证码错误'}), 400
+
+    # 登录成功，设置session
+    session['logged_in'] = True
+    session['phone'] = phone
+    session['login_time'] = datetime.now().isoformat()
+
+    # 清除已使用的验证码
+    del verification_codes[phone]
+
+    logger.info(f"用户登录成功: {phone[:3]}****{phone[-4:]}")
+    return jsonify({
+        'success': True,
+        'message': '登录成功',
+        'session_expires_in': SESSION_LIFETIME
+    })
+
+
+@app.route('/logout')
+def logout():
+    """退出登录"""
+    session.clear()
+    return redirect(url_for('login_page'))
+
+
+@app.route('/api/session')
+def api_session():
+    """检查session状态"""
+    if 'logged_in' not in session:
+        return jsonify({'logged_in': False})
+
+    if 'login_time' in session:
+        login_time = datetime.fromisoformat(session['login_time'])
+        elapsed = (datetime.now() - login_time).total_seconds()
+        remaining = SESSION_LIFETIME - elapsed
+
+        if remaining <= 0:
+            session.clear()
+            return jsonify({'logged_in': False})
+
+        return jsonify({
+            'logged_in': True,
+            'phone': session.get('phone', ''),
+            'session_remaining': int(remaining)
+        })
+
+    return jsonify({'logged_in': False})
 
 
 def get_db_connection():
@@ -35,12 +210,14 @@ def get_db_connection():
 
 
 @app.route('/')
+@login_required
 def index():
     """主页面"""
     return render_template('kline_chart.html')
 
 
 @app.route('/params')
+@login_required
 def params_page():
     """交易参数展示页面"""
     return render_template('trade_params.html')

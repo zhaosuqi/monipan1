@@ -259,7 +259,7 @@ class Config:
         self.POSITION_NOMINAL = float(os.getenv('POSITION_NOMINAL', '10000.0'))
 
         # 订单类型
-        self.OPEN_TAKER_OR_MAKER = os.getenv('OPEN_TAKER_OR_MAKER', 'MAKER')
+        self.OPEN_TAKER_OR_MAKER = os.getenv('OPEN_TAKER_OR_MAKER', 'TAKER')
 
         # 手续费率
         self.MAKER_FEE_RATE = float(os.getenv('MAKER_FEE_RATE', '0.0002'))
@@ -294,6 +294,13 @@ class Config:
         self.WEB_HOST = os.getenv('WEB_HOST', '0.0.0.0')
         self.WEB_PORT = int(os.getenv('WEB_PORT', '8076'))
         self.WEB_ENABLED = os.getenv('WEB_ENABLED', '1').lower() in ('1', 'true', 'yes')
+
+        # 登录白名单（逗号分隔的手机号列表）
+        self.ALLOWED_PHONES = [
+            phone.strip()
+            for phone in os.getenv('ALLOWED_PHONES', '18600028001').split(',')
+            if phone.strip()
+        ]
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置值"""
