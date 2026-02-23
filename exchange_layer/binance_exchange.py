@@ -43,15 +43,15 @@ class BinanceExchange(BaseExchange):
         """连接到币安交易所"""
         try:
             if self.testnet:
-                # 测试网
+                # 测试网 - 初始化时传入 base_url
                 self.client = CMFutures(
                     key=self.api_key,
-                    secret=self.api_secret
+                    secret=self.api_secret,
+                    base_url='https://testnet.binancefuture.com'
                 )
-                self.client.base_url = 'https://testnet.binancefuture.com'
                 self.logger.info("连接到币安测试网")
             else:
-                # 实盘
+                # 实盘 - 使用默认 base_url
                 self.client = CMFutures(
                     key=self.api_key,
                     secret=self.api_secret

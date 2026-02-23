@@ -432,6 +432,9 @@
                 <button class="interval-btn" data-interval="1h">1时</button>
                 <button class="interval-btn" data-interval="4h">4时</button>
                 <button class="interval-btn" data-interval="1d">1天</button>
+                <span style="color: #2b3139; margin: 0 8px;">|</span>
+                <a href="/" class="nav-link" style="color: #f0b90b; text-decoration: none; font-size: 13px; padding: 4px 12px;">K线图</a>
+                <a href="/params" class="nav-link" style="color: #848e9c; text-decoration: none; font-size: 13px; padding: 4px 12px;">交易参数</a>
             </div>
             <div class="toolbar-right">
                 <div class="refresh-info">
@@ -478,6 +481,7 @@
         <div class="bottom-panel">
             <div class="tab-header">
                 <button class="tab-btn active" data-tab="orders">订单</button>
+                <button class="tab-btn" data-tab="trades">交易记录</button>
                 <button class="tab-btn" data-tab="positions">持仓</button>
                 <button class="tab-btn" data-tab="balance">资金</button>
                 <button class="tab-btn" data-tab="events">事件</button>
@@ -506,6 +510,29 @@
                 </div>
             </div>
             
+            <!-- 交易记录Tab -->
+            <div class="tab-content" id="tab-trades">
+                <div class="tab-table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>时间</th>
+                                <th>动作</th>
+                                <th>方向</th>
+                                <th>数量</th>
+                                <th>入场价</th>
+                                <th>出场价</th>
+                                <th>盈亏</th>
+                                <th>来源</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-body">
+                            <tr><td colspan="8" class="empty-message">暂无交易数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- 持仓Tab -->
             <div class="tab-content" id="tab-positions">
                 <div class="tab-table-container">
@@ -599,6 +626,7 @@
 
         // 数据
         let klineData = [];
+        let tradeData = [];
         let currentTable = 'klines_1m_macd_smooth_ma';
         let refreshInterval = 10;
         let countdown = refreshInterval;
@@ -948,6 +976,85 @@
 
             // 滚动到最新
             mainChart.timeScale().scrollToRealTime();
+
+            // 加载并显示交易标记
+            loadTradeMarkers();
+        }
+
+        // 加载交易标记
+        async function loadTradeMarkers() {
+            try {
+                const response = await fetch('/api/trades?limit=200');
+                const result = await response.json();
+
+                if (result.success && result.data.length > 0) {
+                    tradeData = result.data;
+                    updateTradeMarkers();
+                }
+            } catch (error) {
+                console.error('加载交易标记失败:', error);
+            }
+        }
+
+        // 更新交易标记
+        function updateTradeMarkers() {
+            if (!tradeData.length || !candleSeries) return;
+
+            const markers = [];
+
+            tradeData.forEach(trade => {
+                // 解析交易时间
+                const tradeTime = new Date(trade.trade_time).getTime() / 1000;
+
+                // 根据交易动作确定标记类型和位置
+                let markerType, markerColor, markerPosition, markerText;
+
+                switch (trade.action) {
+                    case 'OPEN':
+                        markerType = trade.side === 'long' ? 'arrowUp' : 'arrowDown';
+                        markerColor = trade.side === 'long' ? '#0ecb81' : '#f6465d';
+                        markerPosition = trade.side === 'long' ? 'belowBar' : 'aboveBar';
+                        markerText = trade.side === 'long' ? '多' : '空';
+                        break;
+                    case 'CLOSE':
+                    case 'MANUAL_CLOSE':
+                        markerType = 'square';
+                        markerColor = trade.net_pnl > 0 ? '#0ecb81' : '#f6465d';
+                        markerPosition = 'aboveBar';
+                        markerText = '平';
+                        break;
+                    case 'TP':
+                        markerType = 'circle';
+                        markerColor = '#0ecb81';
+                        markerPosition = 'aboveBar';
+                        markerText = '盈';
+                        break;
+                    case 'SL':
+                        markerType = 'circle';
+                        markerColor = '#f6465d';
+                        markerPosition = 'belowBar';
+                        markerText = '损';
+                        break;
+                    default:
+                        markerType = 'square';
+                        markerColor = '#f0b90b';
+                        markerPosition = 'aboveBar';
+                        markerText = trade.action;
+                }
+
+                markers.push({
+                    time: tradeTime,
+                    position: markerPosition,
+                    color: markerColor,
+                    shape: markerType,
+                    text: markerText,
+                    size: 2,
+                    tooltip: `${trade.action} ${trade.side} ${trade.contracts}张 @${trade.exit_price || trade.entry_price || '--'} PnL:${trade.net_pnl ? trade.net_pnl.toFixed(4) : '--'}`
+                });
+            });
+
+            // 使用markers API添加标记
+            candleSeries.setMarkers(markers);
         }
 
         // 更新统计信息
@@ -1010,6 +1117,8 @@
             refreshTimer = setInterval(() => {
                 loadKlines();
                 loadBottomPanelData();
+                loadTradeMarkers();
+                loadTradesForPanel();
             }, refreshInterval * 1000);
         }
 
@@ -1168,11 +1277,46 @@
             }
         }
 
+        // 加载交易数据到Tab面板
+        async function loadTradesForPanel() {
+            try {
+                const response = await fetch('/api/trades?limit=50');
+                const result = await response.json();
+
+                const tbody = document.getElementById('trades-body');
+                if (result.success && result.data.length > 0) {
+                    tbody.innerHTML = result.data.map(trade => {
+                        const pnlClass = trade.net_pnl > 0 ? 'pnl-positive' : (trade.net_pnl < 0 ? 'pnl-negative' : '');
+                        const actionClass = trade.action === 'OPEN' ? 'side-buy' :
+                                          (trade.action === 'CLOSE' ? 'side-sell' : '');
+                        return `
+                            <tr>
+                                <td>${new Date(trade.trade_time).toLocaleString('zh-CN')}</td>
+                                <td class="${actionClass}">${trade.action || '--'}</td>
+                                <td class="${trade.side === 'long' ? 'side-buy' : 'side-sell'}">${trade.side || '--'}</td>
+                                <td>${trade.contracts || '--'}</td>
+                                <td>${trade.entry_price ? formatPrice(trade.entry_price) : '--'}</td>
+                                <td>${trade.exit_price ? formatPrice(trade.exit_price) : '--'}</td>
+                                <td class="${pnlClass}">${trade.net_pnl ? trade.net_pnl.toFixed(6) : '--'}</td>
+                                <td>${trade.source || '--'}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty-message">暂无交易数据</td></tr>';
+                }
+            } catch (error) {
+                console.error('加载交易数据失败:', error);
+            }
+        }
+
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
             initCharts();
             loadKlines();
+            loadTradeMarkers();
             loadBottomPanelData();
+            loadTradesForPanel();
             startAutoRefresh();
         });
     </script>

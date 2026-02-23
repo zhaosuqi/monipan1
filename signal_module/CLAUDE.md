@@ -1,0 +1,10 @@
+这是一个币安交易的Python脚本
+主要流程从数据库获取币安k线数据以及计算后的技术指标数据，进行交易决策，并将交易结果保存到数据库中。
+交易模块在trade_module
+信号检测模块在signal_module
+币安交易所API在exchange_layer
+数据层以及数据库交互在data
+飞书通知模块在interaction_module
+基础模块在core
+任何修改trade_module和signal_module的代码经过我确认后才能进行提交，以确保交易策略的稳定性和安全性。
+请在修改代码前仔细阅读相关模块的文档和注释，确保理解代码的逻辑和功能。

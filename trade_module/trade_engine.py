@@ -30,6 +30,8 @@ from interaction_module.feishu_bot import FeishuBot
 from trade_module.account_tracker import AccountTracker
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
+# 导入交易记录器
+from core.trade_recorder import get_trade_recorder, TradeRecord, PositionRecord
 
 
 @dataclass
@@ -122,6 +124,9 @@ class TradeEngine:
         self.positions: List[Position] = []
         self.trades: List[Trade] = []
         self.logs: List[tuple] = []
+
+        # 交易记录器（持久化到数据库）
+        self.trade_recorder = get_trade_recorder()
 
         # 账户状态
         self.initial_capital = config.POSITION_BTC
@@ -1003,6 +1008,54 @@ class TradeEngine:
         self.positions.append(pos)
         self.triggers_count += 1
 
+        # 记录开仓到数据库 (TradeRecorder)
+        try:
+            # 获取成交记录，使用成交ID作为 trade_id
+            trade_id = str(order.order_id)  # 默认使用订单ID
+            try:
+                trades = self.exchange.get_user_trades(config.SYMBOL, order_id=int(order.order_id))
+                if trades and len(trades) > 0:
+                    # 使用第一条成交记录的ID作为 trade_id
+                    trade_id = str(trades[0].get('id', order.order_id))
+                    self.logger.info(f"获取到成交记录: trade_id={trade_id}, 成交数量={len(trades)}")
+            except Exception as e:
+                self.logger.warning(f"获取成交记录失败，使用订单ID作为trade_id: {e}")
+
+            position_record = PositionRecord(
+                position_id=pos.id,
+                trace_id=trace_id,
+                symbol=config.SYMBOL,
+                side=side,
+                entry_price=actual_price,
+                entry_contracts=filled_contracts,
+                open_time=ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+                status='OPEN',
+                entry_order_id=str(order.order_id)
+            )
+            self.trade_recorder.record_position_open(position_record)
+
+            # 同时记录交易记录（使用成交ID）
+            trade_record = TradeRecord(
+                trace_id=trace_id,
+                trade_id=trade_id,
+                symbol=config.SYMBOL,
+                side=side,
+                action='OPEN',
+                entry_price=actual_price,
+                exit_price=None,
+                contracts=filled_contracts,
+                position_id=pos.id,
+                order_id=str(order.order_id),
+                fee_rate=open_fee_rate,
+                fee_usd=open_fee_btc * actual_price,
+                source='trade_engine',
+                trade_time=ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+                notes=f"开仓信号: {signal_name}"
+            )
+            self.trade_recorder.record_trade(trade_record)
+        except Exception as e:
+            self.logger.warning(f"记录开仓到数据库失败: {e}")
+
         # 飞书开仓通知
         try:
             # 计算一级止盈和止损价格
@@ -1068,7 +1121,8 @@ class TradeEngine:
                        reason: str, net_btc: Optional[float] = None,
                        pnl_already_applied: bool = False,
                        real_fee_btc: Optional[float] = None,
-                       real_pnl_btc: Optional[float] = None):
+                       real_pnl_btc: Optional[float] = None,
+                       close_order_id: Optional[str] = None):
         """
         平仓
 
@@ -1081,6 +1135,7 @@ class TradeEngine:
             pnl_already_applied: 盈亏是否已经在上游处理
             real_fee_btc: 从交易所接口获取的真实手续费(BTC)，用于飞书通知
             real_pnl_btc: 从交易所接口获取的真实实现盈亏(BTC)，用于飞书通知
+            close_order_id: 平仓订单ID，用于获取成交明细
         """
         # 转换时间戳为pandas.Timestamp
         if not isinstance(close_time, pd.Timestamp):
@@ -1197,6 +1252,56 @@ class TradeEngine:
             trace_id=pos.trace_id
         )
         self.trades.append(trade)
+
+        # 记录平仓到数据库 (TradeRecorder)
+        try:
+            # 更新持仓记录为关闭状态
+            close_time_str = close_time.isoformat() if hasattr(close_time, 'isoformat') else str(close_time)
+            self.trade_recorder.record_position_close(
+                position_id=pos.id,
+                exit_price=close_price,
+                exit_contracts=pos.contracts,
+                close_time=close_time_str,
+                exit_reason=reason,
+                total_fee=fee_btc * close_price if close_price else 0,
+                gross_pnl=gross_usd,
+                net_pnl=net_usd
+            )
+
+            # 获取成交记录，使用成交ID作为 trade_id
+            trade_id = None
+            if close_order_id:
+                try:
+                    trade_details = self._get_order_trade_details(int(close_order_id))
+                    trade_id = trade_details.get('trade_id')
+                    if trade_id:
+                        self.logger.info(f"获取到平仓成交记录: trade_id={trade_id}")
+                except Exception as e:
+                    self.logger.warning(f"获取平仓成交记录失败: {e}")
+
+            # 记录平仓交易（使用成交ID）
+            trade_record = TradeRecord(
+                trace_id=pos.trace_id,
+                trade_id=trade_id,  # 使用成交ID，与同步数据一致
+                symbol=config.SYMBOL,
+                side=pos.side,
+                action=reason.upper() if reason else 'CLOSE',
+                entry_price=pos.entry_price,
+                exit_price=close_price,
+                contracts=pos.contracts,
+                position_id=pos.id,
+                order_id=close_order_id,
+                fee_rate=close_fee_rate,
+                fee_usd=fee_btc * close_price if close_price else 0,
+                gross_pnl=gross_usd,
+                net_pnl=net_usd,
+                source='trade_engine',
+                trade_time=close_time_str,
+                notes=f"平仓原因: {reason}"
+            )
+            self.trade_recorder.record_trade(trade_record)
+        except Exception as e:
+            self.logger.warning(f"记录平仓到数据库失败: {e}")
 
         # 注意: 不在这里记录日志,与macd_refactor.py保持一致
         # 日志记录已经在各个业务逻辑中完成(止盈、止损、回撤、超时)
@@ -1576,7 +1681,8 @@ class TradeEngine:
 
                 # 关闭持仓
                 self.close_position(pos, ts, actual_price, 'take_profit_final', net_btc, pnl_already_applied=True,
-                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
+                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
+                                   close_order_id=str(order.order_id))
                 return True
             else:
                 self.logger.error(f"❌ 止盈市价单失败: {order.status.value}")
@@ -1688,14 +1794,18 @@ class TradeEngine:
 
         Returns:
             dict: 包含以下字段：
-                - real_fee_eth: 真实手续费(基础币种)，无数据时为 None
-                - real_pnl_eth: 真实实现盈亏(基础币种)，无数据时为 None
+                - real_fee_btc: 真实手续费(基础币种)，无数据时为 None
+                - real_pnl_btc: 真实实现盈亏(基础币种)，无数据时为 None
                 - commission_asset: 手续费资产类型
+                - trade_id: 第一条成交记录的ID（用于与同步数据去重）
+                - trade_ids: 所有成交记录ID列表
         """
         result = {
             'real_fee_btc': None,
             'real_pnl_btc': None,
-            'commission_asset': None
+            'commission_asset': None,
+            'trade_id': None,
+            'trade_ids': []
         }
 
         try:
@@ -1707,6 +1817,7 @@ class TradeEngine:
             total_commission = 0.0
             total_realized_pnl = 0.0
             commission_asset = None
+            trade_ids = []
 
             for trade in trades:
                 # 累加手续费
@@ -1721,10 +1832,18 @@ class TradeEngine:
                 if not commission_asset:
                     commission_asset = trade.get('commissionAsset', '')
 
+                # 收集成交ID
+                trade_id = trade.get('id')
+                if trade_id:
+                    trade_ids.append(str(trade_id))
+
             # 直接使用 BTC 值（币本位合约）
             result['real_fee_btc'] = total_commission
             result['real_pnl_btc'] = total_realized_pnl
             result['commission_asset'] = commission_asset
+            result['trade_ids'] = trade_ids
+            if trade_ids:
+                result['trade_id'] = trade_ids[0]  # 使用第一条成交ID
 
         except Exception as e:
             self.logger.warning(f"⚠️ [成交明细] 获取订单 {order_id} 成交明细失败: {e}")
@@ -2052,7 +2171,8 @@ class TradeEngine:
 
         # 关闭持仓
         self.close_position(pos, ts, price, reason, net_btc, pnl_already_applied=True,
-                           real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
+                           real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
+                           close_order_id=str(order_id) if order_id else None)
 
 
     def check_drawdown(self, pos: Position, ts: pd.Timestamp,
@@ -2277,7 +2397,8 @@ class TradeEngine:
 
                 # 关闭持仓
                 self.close_position(pos, ts, actual_price, 'drawdown_close', net_btc, pnl_already_applied=True,
-                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc)
+                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
+                                   close_order_id=str(order.order_id))
                 return True
             else:
                 self.logger.error(f"❌ 回撤市价单失败: {order.status.value}")

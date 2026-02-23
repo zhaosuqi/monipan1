@@ -255,6 +255,68 @@ class Database:
             )
         """)
 
+        # 交易记录表 - 完整交易过程记录（支持非trade模块发起的交易）
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS trade_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT NOT NULL,
+                trade_id TEXT UNIQUE,
+                symbol TEXT NOT NULL DEFAULT 'BTCUSD_PERP',
+                side TEXT NOT NULL CHECK(side IN ('long', 'short')),
+                action TEXT NOT NULL CHECK(action IN (
+                    'OPEN', 'CLOSE', 'TP', 'SL', 'PARTIAL_CLOSE',
+                    'EOD_CLOSE', 'CLOSE_RETREAT', 'CLOSE_DECAY', 'MANUAL_CLOSE'
+                )),
+                entry_price REAL,
+                exit_price REAL,
+                contracts REAL NOT NULL,
+                position_id TEXT,
+                order_id TEXT,
+                fee_rate REAL,
+                fee_usd REAL,
+                gross_pnl REAL,
+                net_pnl REAL,
+                realized_pnl REAL,
+                balance_before REAL,
+                balance_after REAL,
+                source TEXT DEFAULT 'trade_engine' CHECK(source IN (
+                    'trade_engine', 'exchange_api', 'manual', 'sync'
+                )),
+                kline_open_time TEXT,
+                kline_close_time TEXT,
+                trade_time TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT
+            )
+        """)
+
+        # 持仓记录表 - 记录每个完整持仓周期
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS position_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id TEXT UNIQUE NOT NULL,
+                trace_id TEXT NOT NULL,
+                symbol TEXT NOT NULL DEFAULT 'BTCUSD_PERP',
+                side TEXT NOT NULL CHECK(side IN ('long', 'short')),
+                entry_price REAL NOT NULL,
+                exit_price REAL,
+                entry_contracts REAL NOT NULL,
+                exit_contracts REAL DEFAULT 0,
+                open_time TEXT NOT NULL,
+                close_time TEXT,
+                status TEXT DEFAULT 'OPEN' CHECK(status IN ('OPEN', 'CLOSED', 'PARTIAL')),
+                total_fee_usd REAL DEFAULT 0,
+                gross_pnl REAL,
+                net_pnl REAL,
+                exit_reason TEXT,
+                entry_order_id TEXT,
+                exit_order_id TEXT,
+                tp_levels_hit TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # 创建索引
         self.execute("CREATE INDEX IF NOT EXISTS idx_klines_time ON klines_1m(open_time)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_indicators_time ON klines_1m_macd_smooth_ma(open_time)")
@@ -263,6 +325,17 @@ class Database:
         self.execute("CREATE INDEX IF NOT EXISTS idx_backtestlog_time ON backtestlog(log_time)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_sim_log_time ON sim_log(log_time)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_klines_sim_time ON klines_1m_sim(open_time)")
+
+        # 交易记录表索引
+        self.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_trace ON trade_records(trace_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_time ON trade_records(trade_time)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_symbol ON trade_records(symbol)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_trade_records_position ON trade_records(position_id)")
+
+        # 持仓记录表索引
+        self.execute("CREATE INDEX IF NOT EXISTS idx_position_records_id ON position_records(position_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_position_records_trace ON position_records(trace_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_position_records_status ON position_records(status)")
 
         self._get_connection().commit()
 
