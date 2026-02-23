@@ -302,6 +302,9 @@ class Config:
             if phone.strip()
         ]
 
+        # 日志文件路径（用于Web日志页面）
+        self.TRADING_LOG_PATH = os.getenv('TRADING_LOG_PATH', str(self.base_dir / 'trading.log'))
+
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置值"""
         return self.config_data.get(key, default)

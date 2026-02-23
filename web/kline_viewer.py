@@ -223,6 +223,47 @@ def params_page():
     return render_template('trade_params.html')
 
 
+@app.route('/logs')
+@login_required
+def logs_page():
+    """日志查看页面"""
+    return render_template('logs.html', log_path=config.TRADING_LOG_PATH)
+
+
+@app.route('/api/logs')
+@login_required
+def api_logs():
+    """获取日志内容API"""
+    log_path = config.TRADING_LOG_PATH
+    try:
+        if not os.path.exists(log_path):
+            return jsonify({'success': True, 'lines': [], 'path': log_path})
+
+        # 读取最后200行
+        lines = []
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # 使用 collections.deque 高效读取最后N行
+            from collections import deque
+            lines = list(deque(f, maxlen=200))
+
+        # 去除行尾换行符
+        lines = [line.rstrip('\n\r') for line in lines]
+
+        return jsonify({
+            'success': True,
+            'lines': lines,
+            'path': log_path,
+            'count': len(lines)
+        })
+    except Exception as e:
+        logger.error(f"读取日志文件失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'path': log_path
+        }), 500
+
+
 @app.route('/api/klines')
 def api_klines():
     """
