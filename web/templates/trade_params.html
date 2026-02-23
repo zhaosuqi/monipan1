@@ -1,512 +1,656 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>交易参数 - 交易监控系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-    <style>
-        :root {
-            --bg-dark: #1a1a2e;
-            --bg-card: #16213e;
-            --bg-input: #0f172a;
-            --text-primary: #ffffff;
-            --text-secondary: rgba(255,255,255,0.7);
-            --border-color: rgba(255,255,255,0.1);
-            --accent-color: #f0b90b;
-            --accent-hover: #f8d12f;
-            --success-color: #00c853;
-            --danger-color: #ff5252;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>交易参数 - 交易监控系统</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+  <style>
+    :root {
+      --bg-dark: #0b0e11;
+      --bg-card: #141821;
+      --bg-elev: #1e2329;
+      --text-primary: #eaecef;
+      --text-secondary: #848e9c;
+      --border-color: #2b3139;
+      --accent-color: #22d3ee;
+      --accent-alt: #f97316;
+      --success-color: #0ecb81;
+      --danger-color: #f6465d;
+      --warning-color: #f59e0b;
+    }
 
-        body {
-            background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-card) 100%);
-            min-height: 100vh;
-            color: var(--text-primary);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-        }
+    body {
+      min-height: 100vh;
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background:
+        radial-gradient(circle at 10% 10%, rgba(34, 211, 238, 0.08), transparent 40%),
+        radial-gradient(circle at 90% 0%, rgba(249, 115, 22, 0.08), transparent 35%),
+        linear-gradient(135deg, var(--bg-dark) 0%, #11151d 45%, #0a0c10 100%);
+    }
 
-        .navbar {
-            background: rgba(0,0,0,0.3) !important;
-            border-bottom: 1px solid var(--border-color);
-        }
+    .navbar {
+      background: rgba(11, 14, 17, 0.86) !important;
+      border-bottom: 1px solid var(--border-color);
+      backdrop-filter: blur(6px);
+    }
 
-        .navbar-brand {
-            color: var(--accent-color) !important;
-            font-weight: 600;
-        }
+    .navbar-brand {
+      color: var(--accent-color) !important;
+      font-weight: 600;
+    }
 
-        .nav-link {
-            color: var(--text-secondary) !important;
-        }
+    .nav-link {
+      color: var(--text-secondary) !important;
+    }
 
-        .nav-link:hover, .nav-link.active {
-            color: var(--text-primary) !important;
-        }
+    .nav-link:hover,
+    .nav-link.active {
+      color: var(--text-primary) !important;
+    }
 
-        .container-main {
-            padding: 20px;
-            max-width: 1400px;
-            margin: 0 auto;
-        }
+    .navbar-toggler {
+      border-color: var(--border-color);
+    }
 
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 1px solid var(--border-color);
-        }
+    .navbar-toggler-icon {
+      filter: invert(1) grayscale(1);
+    }
 
-        .page-header h1 {
-            font-size: 1.5rem;
-            margin: 0;
-            color: var(--text-primary);
-        }
+    .container-main {
+      max-width: 1600px;
+      padding: 20px;
+      margin: 0 auto;
+    }
 
-        .btn-back {
-            background: transparent;
-            border: 1px solid var(--accent-color);
-            color: var(--accent-color);
-            padding: 6px 16px;
-            border-radius: 6px;
-            text-decoration: none;
-            transition: all 0.3s;
-        }
+    .page-header {
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
 
-        .btn-back:hover {
-            background: var(--accent-color);
-            color: var(--bg-dark);
-        }
+    .page-subtitle {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
 
-        .card {
-            background: rgba(255,255,255,0.05);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
+    .card {
+      background: rgba(20, 24, 33, 0.88);
+      border: 1px solid var(--border-color);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24);
+    }
 
-        .card-header {
-            background: rgba(0,0,0,0.2);
-            border-bottom: 1px solid var(--border-color);
-            padding: 10px 15px;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            color: var(--text-primary);
-            font-weight: 500;
-        }
+    .card-header {
+      color: var(--text-primary);
+      background: linear-gradient(90deg, rgba(34, 211, 238, 0.08), rgba(249, 115, 22, 0.04));
+      border-bottom: 1px solid var(--border-color);
+    }
 
-        .card-header:hover {
-            background: rgba(0,0,0,0.3);
-        }
+    .card-body {
+      background: transparent;
+    }
 
-        .card-body {
-            padding: 15px;
-        }
+    .form-label {
+      color: var(--text-secondary);
+    }
 
-        .param-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-bottom: 10px;
-        }
+    .form-control {
+      color: var(--text-primary);
+      border-color: var(--border-color);
+      background: rgba(17, 21, 29, 0.92);
+    }
 
-        .param-item {
-            flex: 1;
-            min-width: 200px;
-            max-width: calc(25% - 15px);
-        }
+    .form-control:focus {
+      color: var(--text-primary);
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 0.2rem rgba(34, 211, 238, 0.15);
+      background: rgba(17, 21, 29, 1);
+    }
 
-        @media (max-width: 1200px) {
-            .param-item {
-                max-width: calc(33.333% - 15px);
-            }
-        }
+    .readonly-note {
+      font-size: 12px;
+      color: #a5b4c8;
+      background: rgba(34, 211, 238, 0.1);
+      border: 1px solid rgba(34, 211, 238, 0.24);
+      border-radius: 8px;
+      padding: 6px 10px;
+      display: inline-block;
+      margin-bottom: 10px;
+    }
 
-        @media (max-width: 768px) {
-            .param-item {
-                max-width: calc(50% - 15px);
-            }
-        }
+    .user-info {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
 
-        @media (max-width: 576px) {
-            .param-item {
-                max-width: 100%;
-            }
-        }
+    .logout-btn {
+      margin-left: 10px;
+      color: var(--danger-color);
+      text-decoration: none;
+      font-size: 0.875rem;
+    }
 
-        .param-label {
-            display: block;
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            margin-bottom: 4px;
-        }
+    .logout-btn:hover {
+      color: #ff7f94;
+    }
 
-        .param-value {
-            width: 100%;
-            padding: 8px 12px;
-            background: var(--bg-input);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            color: var(--text-primary);
-            font-size: 0.875rem;
-            cursor: not-allowed;
-        }
+    .readonly-page .form-control[readonly],
+    .readonly-page textarea[readonly] {
+      background-color: rgba(15, 19, 26, 0.95);
+      color: #d7dde6;
+      border-color: #323a48;
+      cursor: not-allowed;
+    }
 
-        .param-value.text-success {
-            color: var(--success-color) !important;
-            border-color: rgba(0,200,83,0.3);
-        }
+    .readonly-page .form-check-input:disabled {
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
 
-        .param-value.text-danger {
-            color: var(--danger-color) !important;
-            border-color: rgba(255,82,82,0.3);
-        }
+    .readonly-page .text-success {
+      color: var(--success-color) !important;
+    }
 
-        .param-value:focus {
-            outline: none;
-            border-color: var(--accent-color);
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-secondary);
-        }
-
-        .error-message {
-            background: rgba(255,82,82,0.1);
-            border: 1px solid rgba(255,82,82,0.3);
-            color: var(--danger-color);
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-        }
-
-        .badge-live {
-            background: var(--success-color);
-            color: #000;
-            font-size: 0.7rem;
-            padding: 2px 8px;
-            border-radius: 4px;
-            margin-left: 10px;
-        }
-
-        .user-info {
-            color: var(--text-secondary);
-            font-size: 0.875rem;
-        }
-
-        .logout-btn {
-            color: var(--danger-color);
-            text-decoration: none;
-            margin-left: 15px;
-            font-size: 0.875rem;
-        }
-
-        .logout-btn:hover {
-            color: #ff7575;
-        }
-
-        .refresh-hint {
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-            margin-top: 20px;
-            text-align: center;
-        }
-
-        .float-end i {
-            transition: transform 0.3s;
-        }
-
-        .collapsed .float-end i {
-            transform: rotate(-90deg);
-        }
-    </style>
+    .readonly-page .text-danger {
+      color: var(--danger-color) !important;
+    }
+  </style>
 </head>
-<body>
-    <nav class="navbar navbar-expand-lg">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-graph-up-arrow"></i> 交易监控系统
-            </a>
-            <div class="collapse navbar-collapse">
-                <ul class="navbar-nav me-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/">K线图表</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/params">交易参数</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logs">日志查看</a>
-                    </li>
-                </ul>
-                <div class="d-flex align-items-center">
-                    <span class="user-info">
-                        <i class="bi bi-person-circle"></i> 186****8001
-                    </span>
-                    <a href="/logout" class="logout-btn">
-                        <i class="bi bi-box-arrow-right"></i> 退出
-                    </a>
-                </div>
-            </div>
+<body class="readonly-page">
+  <nav class="navbar navbar-expand-lg">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="/">
+        <i class="bi bi-graph-up-arrow"></i> 交易监控系统
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topNav" aria-controls="topNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="topNav">
+        <ul class="navbar-nav me-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="/">K线图表</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link active" href="/params">交易参数</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="/logs">日志查看</a>
+          </li>
+        </ul>
+        <div class="d-flex align-items-center">
+          <span class="user-info">
+            <i class="bi bi-person-circle"></i> {{ session.get('phone', '未知')[:3] }}****{{ session.get('phone', '未知')[-4:] }}
+          </span>
+          <a href="/logout" class="logout-btn">
+            <i class="bi bi-box-arrow-right"></i> 退出
+          </a>
         </div>
-    </nav>
+      </div>
+    </div>
+  </nav>
 
-    <div class="container-main">
-        <div class="page-header">
-            <h1><i class="bi bi-sliders"></i> 交易参数配置</h1>
-            <a href="/" class="btn-back">
-                <i class="bi bi-arrow-left"></i> 返回图表
-            </a>
-        </div>
-
-        <div id="loading" class="loading">
-            <div class="spinner-border text-warning" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">加载参数中...</p>
-        </div>
-
-        <div id="error" class="error-message" style="display: none;">
-            <i class="bi bi-exclamation-triangle"></i> <span id="errorText">加载失败</span>
-        </div>
-
-        <div id="paramsContainer" style="display: none;">
-            <!-- 动态生成的参数卡片 -->
-        </div>
-
-        <p class="refresh-hint">
-            <i class="bi bi-info-circle"></i> 参数从配置实时读取，刷新页面可获取最新值
-        </p>
+  <div class="container-main">
+    <div class="page-header">
+      <h1 class="h4 mb-1">交易参数查看</h1>
+      <p class="page-subtitle">黑色主题参数面板，参数为只读展示。</p>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // 参数分组配置
-        const paramGroups = {
-            '基础配置': [
-                { key: '交易对', label: '交易对' },
-                { key: 'K线间隔', label: 'K线间隔' },
-                { key: '回测模式', label: '回测模式' },
-                { key: '数据库模拟', label: '数据库模拟' }
-            ],
-            '仓位配置': [
-                { key: '初始资金(BTC)', label: '初始资金 (BTC)' },
-                { key: '合约名义价值(USD)', label: '合约名义价值 (USD)' },
-                { key: '杠杆倍数', label: '杠杆倍数' },
-                { key: '仓位名义价值', label: '仓位名义价值' }
-            ],
-            'MACD指标参数': [
-                { key: 'Fast周期', label: 'Fast 周期' },
-                { key: 'Slow周期', label: 'Slow 周期' },
-                { key: 'Signal周期', label: 'Signal 周期' }
-            ],
-            'T0参数-15分钟': [
-                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
-                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
-                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
-                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
-                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
-                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
-            ],
-            'T0参数-1小时': [
-                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
-                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
-                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
-                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
-                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
-                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
-            ],
-            'T0参数-4小时': [
-                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
-                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
-                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
-                { key: 'DIF下限', label: 'DIF 下限', type: 'success' },
-                { key: 'J上限(多)', label: 'J 上限 (多)', type: 'success' },
-                { key: 'J下限(空)', label: 'J 下限 (空)', type: 'danger' }
-            ],
-            'T0参数-1天': [
-                { key: 'HIST上限', label: 'HIST 上限', type: 'success' },
-                { key: 'HIST下限', label: 'HIST 下限', type: 'success' },
-                { key: 'DIF上限', label: 'DIF 上限', type: 'success' },
-                { key: 'DIF下限', label: 'DIF 下限', type: 'success' }
-            ],
-            '均值参数-第一组(15m)': [
-                { key: 'HIST均值数量', label: 'HIST 均值数量' },
-                { key: 'HIST均值限制', label: 'HIST 均值限制' },
-                { key: 'DIF均值数量', label: 'DIF 均值数量' },
-                { key: 'DIF均值限制', label: 'DIF 均值限制' },
-                { key: 'DEA均值数量', label: 'DEA 均值数量' },
-                { key: 'DEA均值限制', label: 'DEA 均值限制' }
-            ],
-            '均值参数-第一组(1h)': [
-                { key: 'HIST均值数量', label: 'HIST 均值数量' },
-                { key: 'HIST均值限制', label: 'HIST 均值限制' },
-                { key: 'DIF均值数量', label: 'DIF 均值数量' },
-                { key: 'DIF均值限制', label: 'DIF 均值限制' },
-                { key: 'DEA均值数量', label: 'DEA 均值数量' },
-                { key: 'DEA均值限制', label: 'DEA 均值限制' }
-            ],
-            '均值参数-第一组(4h)': [
-                { key: 'HIST均值数量', label: 'HIST 均值数量' },
-                { key: 'HIST均值限制', label: 'HIST 均值限制' },
-                { key: 'DIF均值数量', label: 'DIF 均值数量' },
-                { key: 'DIF均值限制', label: 'DIF 均值限制' },
-                { key: 'DEA均值数量', label: 'DEA 均值数量' },
-                { key: 'DEA均值限制', label: 'DEA 均值限制' }
-            ],
-            '均值参数-第二组(15m)': [
-                { key: 'HIST均值数量', label: 'HIST 均值数量' },
-                { key: 'HIST均值限制', label: 'HIST 均值限制' },
-                { key: 'DIF均值数量', label: 'DIF 均值数量' },
-                { key: 'DIF均值限制', label: 'DIF 均值限制' },
-                { key: 'DEA均值数量', label: 'DEA 均值数量' },
-                { key: 'DEA均值限制', label: 'DEA 均值限制' }
-            ],
-            '均值参数-第二组(1h)': [
-                { key: 'HIST均值数量', label: 'HIST 均值数量' },
-                { key: 'HIST均值限制', label: 'HIST 均值限制' },
-                { key: 'DIF均值数量', label: 'DIF 均值数量' },
-                { key: 'DIF均值限制', label: 'DIF 均值限制' },
-                { key: 'DEA均值数量', label: 'DEA 均值数量' },
-                { key: 'DEA均值限制', label: 'DEA 均值限制' }
-            ],
-            '止盈止损': [
-                { key: '止损比例', label: '止损比例' },
-                { key: '止盈级别', label: '止盈级别' },
-                { key: '回撤比例', label: '回撤比例' },
-                { key: '止损持仓时间', label: '止损持仓时间 (分钟)' }
-            ],
-            '价格变化参数': [
-                { key: '价格变化限制A', label: '价格变化限制 A' },
-                { key: '价格变化计数A', label: '价格变化计数 A' },
-                { key: '价格变化限制B', label: '价格变化限制 B' },
-                { key: '价格变化计数B', label: '价格变化计数 B' },
-                { key: '分钟价格变化A', label: '分钟价格变化 A' },
-                { key: '分钟数A', label: '分钟数 A' },
-                { key: '分钟价格变化B', label: '分钟价格变化 B' },
-                { key: '分钟数B', label: '分钟数 B' }
-            ],
-            'T1参数': [
-                { key: 'T0_HIST变化', label: 'T0_HIST 变化' },
-                { key: 'T0_DIF变化', label: 'T0_DIF 变化' },
-                { key: 'HIST15限制', label: 'HIST15 限制' },
-                { key: 'HIST15最大', label: 'HIST15 最大' },
-                { key: 'DIF4限制', label: 'DIF4 限制' }
-            ],
-            '特殊参数': [
-                { key: '4H极端限制', label: '4H 极端限制' },
-                { key: '4H中性区间', label: '4H 中性区间' },
-                { key: '启用MA5/MA10', label: '启用 MA5/MA10' },
-                { key: 'T0锁仓', label: 'T0 锁仓' }
-            ],
-            '手续费': [
-                { key: 'Maker费率', label: 'Maker 费率' },
-                { key: 'Taker费率', label: 'Taker 费率' },
-                { key: '默认费率', label: '默认费率' },
-                { key: '开仓类型', label: '开仓类型' }
-            ]
-        };
+    <div class="container-fluid px-0">
+    <div id="form-wrapper" style="position:relative">
+    <form id="backtest-form" method="post">
+        <div class="row g-2 mb-2">
+          <div class="col-md-3">
+            <label class="form-label small mb-0">产品名称</label>
+            <input name="symbol" class="form-control form-control-sm" value="{{ defaults.symbol }}" />
+          </div>
+        </div>
 
-        let paramsData = {};
+        <div class="row g-2 mb-2">
+          <div class="col-md-3">
+            <label class="form-label small mb-0">开仓执行</label>
+            <div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="open_taker_or_maker" id="open_taker" value="TAKER" {% if defaults.open_taker_or_maker|upper == 'TAKER' %}checked{% endif %}>
+                <label class="form-check-label" for="open_taker">TAKER</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="open_taker_or_maker" id="open_maker" value="MAKER" {% if defaults.open_taker_or_maker|upper != 'TAKER' %}checked{% endif %}>
+                <label class="form-check-label" for="open_maker">MAKER</label>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small mb-0">挂单比例 (Maker)</label>
+            <input name="open_maker_price_ratio" class="form-control form-control-sm" value="{{ defaults.open_maker_price_ratio }}" />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small mb-0">挂单持续时间(分)</label>
+            <input name="open_maker_duration_minutes" class="form-control form-control-sm" value="{{ defaults.open_maker_duration_minutes }}" />
+          </div>
+        </div>
 
-        async function loadParams() {
-            try {
-                const response = await fetch('/api/config');
-                const result = await response.json();
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#stopLossDecayBody" style="cursor:pointer">
+            止损与动能衰减 <span class="float-end">▼</span>
+          </div>
+          <div id="stopLossDecayBody" class="collapse">
+            <div class="card-body py-2">
+             <div class="row g-2">
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">止损点数</label>
+                    <input name="stop_loss_points" class="form-control form-control-sm" value="{{ defaults.stop_loss_points }}" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">止损后冷静期（分）</label>
+                    <input name="stop_loss_hold_time" class="form-control form-control-sm" value="{{ defaults.stop_loss_hold_time }}" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0 text-danger">超时平仓(分)</label>
+                    <input name="close_time_minutes" class="form-control form-control-sm" value="{{ defaults.close_time_minutes }}" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0 text-danger">超时平仓比例</label>
+                    <input name="timeout_close_ratio" class="form-control form-control-sm" value="{{ defaults.timeout_close_ratio }}" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">衰减:当前HIST4h与开仓差</label>
+                    <input name="close_decay_points" class="form-control form-control-sm" value="{{ defaults.close_decay_points }}" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">衰减:HIST4h绝对值小于</label>
+                    <input name="hist4_neutral_band" class="form-control form-control-sm" value="{{ defaults.hist4_neutral_band }}" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0 text-danger">衰减:dif4 t0与开仓差</label>
+                    <input name="dif4_t0_min_change" class="form-control form-control-sm" value="{{ defaults.dif4_t0_min_change }}" />
+                </div>
+             </div>
+            </div>
+          </div>
+        </div>  
 
-                if (result.success) {
-                    paramsData = result.data;
-                    renderParams();
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('paramsContainer').style.display = 'block';
-                } else {
-                    throw new Error(result.error || '加载失败');
-                }
-            } catch (error) {
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('error').style.display = 'block';
-                document.getElementById('errorText').textContent = error.message;
-            }
-        }
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#takeProfitBody" style="cursor:pointer">止盈参数 <span class="float-end">▼</span></div>
+          <div id="takeProfitBody" class="collapse show">
+          <div class="card-body py-2">
+            <div class="row g-2">
+              <div class="col-md-5">
+                <label class="form-label small mb-0">分级止盈 (JSON 数组,开仓价*比例)</label>
+                <input name="tp_levels" class="form-control form-control-sm" value='{{ defaults.tp_levels }}' />
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small mb-0">每次分级仓位比例</label>
+                <input name="tp_ratio_per_level" class="form-control form-control-sm" value="{{ defaults.tp_ratio_per_level }}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0">最后成交止盈回撤，开仓价+开仓价*比例</label>
+                <input name="drawdown_points" class="form-control form-control-sm" value="{{ defaults.drawdown_points }}" />
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>  
 
-        function renderParams() {
-            const container = document.getElementById('paramsContainer');
-            container.innerHTML = '';
+  
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#momentumBody" style="cursor:pointer">动能大小判断 <span class="float-end">▼</span></div>
+          <div id="momentumBody" class="collapse show">
+          <div class="card-body py-2">
+            <div class="row g-2 mb-2">
+             
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST4H < </label>
+                <input name="t0_hist4_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist4_limit}}" />
+              </div>
+               <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST4H > </label>
+                <input name="t0_hist4_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist4_limit_min}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF4H < </label>
+                <input name="t0_dif4_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif4_limit}}" />
+              </div>
+               <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF4H > </label>
+                <input name="t0_dif4_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif4_limit_min}}" />
+              </div>
 
-            Object.entries(paramGroups).forEach(([groupName, fields]) => {
-                const groupData = paramsData[groupName];
-                if (!groupData) return;
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST15 < </label>
+                <input name="t0_hist15_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist15_limit}}" />
+              </div>
+               <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST15 > </label>
+                <input name="t0_hist15_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist15_limit_min}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF15 < </label>
+                <input name="t0_dif15_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif15_limit}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF15 > </label>
+                <input name="t0_dif15_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif15_limit_min}}" />
+              </div>
 
-                const card = document.createElement('div');
-                card.className = 'card';
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST1H < </label>
+                <input name="t0_hist1h_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist1h_limit}}" />
+              </div>
+               <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST1H > </label>
+                <input name="t0_hist1h_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist1h_limit_min}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF1H < </label>
+                <input name="t0_dif1h_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif1h_limit}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF1H > </label>
+                <input name="t0_dif1h_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif1h_limit_min}}" />
+              </div>
 
-                const cardId = 'card_' + groupName.replace(/[^a-zA-Z0-9]/g, '_');
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST1d < </label>
+                <input name="t0_hist1d_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist1d_limit}}" />
+              </div>
+               <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头HIST1d > </label>
+                <input name="t0_hist1d_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_hist1d_limit_min}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF1d < </label>
+                <input name="t0_dif1d_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif1d_limit}}" />
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small mb-0 text-success">  多头DIF1d > </label>
+                <input name="t0_dif1d_limit_min" class="form-control form-control-sm border-success" value="{{ defaults.t0_dif1d_limit_min}}" />
+              </div>
 
-                card.innerHTML = `
-                    <div class="card-header" data-bs-toggle="collapse" data-bs-target="#${cardId}">
-                        <span>${groupName}</span>
-                        <span class="float-end"><i class="bi bi-chevron-down"></i></span>
-                    </div>
-                    <div class="collapse show" id="${cardId}">
-                        <div class="card-body">
-                            <div class="param-row">
-                                ${fields.map(field => {
-                                    const value = groupData[field.key];
-                                    const typeClass = field.type ? `text-${field.type}` : '';
-                                    return `
-                                        <div class="param-item">
-                                            <label class="param-label">${field.label}</label>
-                                            <input type="text" class="param-value ${typeClass}" value="${formatValue(value)}" readonly>
-                                        </div>
-                                    `;
-                                }).join('')}
-                            </div>
-                        </div>
-                    </div>
-                `;
+               <!-- <div class="col-md-4">
+                <label class="form-label small mb-0 text-danger">T1: DIF4限制 (多>)</label>
+                <input name="t1_dif4_limit" class="form-control form-control-sm" value="{{ defaults.t1_dif4_limit }}" />
+              </div> -->
+            </div>
+          </div>
+          </div>
+        </div>
 
-                container.appendChild(card);
-            });
-        }
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#meanCheckBody" style="cursor:pointer">与前向平均值判断 <span class="float-end">▼</span></div>
+          <div id="meanCheckBody" class="collapse show">
+          <div class="card-body py-2">
+            <div class="row g-2 mb-2">
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">A 判断DIF15向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dif15_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dif15_count }}" />
+                  <input name="means_dif15_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dif15_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DIF15 - () > A平均值</label>
+                  <input name="dif15_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dif15_means_limit }}" />
+                  <input name="dif15_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dif15_means_limit_2 }}" />
+                </div>
 
-        function formatValue(value) {
-            if (value === null || value === undefined) return '-';
-            if (typeof value === 'boolean') return value ? '是' : '否';
-            if (Array.isArray(value)) return JSON.stringify(value);
-            return String(value);
-        }
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">B 判断DEA15向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dea15_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dea15_count }}" />
+                  <input name="means_dea15_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dea15_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DEA15 - () > 前A分钟DEA15</label>
+                  <input name="dea15_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dea15_means_limit }}" />
+                  <input name="dea15_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dea15_means_limit_2 }}" />  
+                </div>
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">C 判断HIST15向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_hist15_count" class="form-control form-control-sm border-success" value="{{ defaults.means_hist15_count }}" />
+                  <input name="means_hist15_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_hist15_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">HIST15 - () > C平均值</label>
+                  <input name="hist15_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.hist15_means_limit }}" />
+                  <input name="hist15_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.hist15_means_limit_2 }}" />
+                </div>
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">D 判断HIST4向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_hist4_count" class="form-control form-control-sm border-success" value="{{ defaults.means_hist4_count }}" />
+                  <input name="means_hist4_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_hist4_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">HIST4 - () >D平均值</label>
+                  <input name="hist4_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.hist4_means_limit }}" />
+                  <input name="hist4_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.hist4_means_limit_2 }}" /> 
+                </div>
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">E 判断DIF4向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dif4_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dif4_count }}" />
+                  <input name="means_dif4_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dif4_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DIF4 - ()>E平均值</label>
+                  <input name="dif4_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dif4_means_limit }}" />
+                  <input name="dif4_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dif4_means_limit_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">F 判断DEA4向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dea4_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dea4_count }}" />
+                  <input name="means_dea4_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dea4_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DEA4 - ()>前F平均值</label>
+                  <input name="dea4_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dea4_means_limit }}" />
+                  <input name="dea4_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dea4_means_limit_2 }}" />
+                </div> 
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">G 判断HIST1H向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_hist1h_count" class="form-control form-control-sm border-success" value="{{ defaults.means_hist1h_count }}" />
+                  <input name="means_hist1h_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_hist1h_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">HIST1H - () >G平均值</label>
+                  <input name="hist1h_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.hist1h_means_limit }}" />
+                  <input name="hist1h_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.hist1h_means_limit_2 }}" />
+                </div>
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">H 判断DIF1H向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dif1h_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dif1h_count }}" />
+                  <input name="means_dif1h_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dif1h_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DIF1H - ()>H平均值</label>
+                  <input name="dif1h_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dif1h_means_limit }}" />
+                  <input name="dif1h_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dif1h_means_limit_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">J 判断DEA1H向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dea1h_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dea1h_count }}" />
+                  <input name="means_dea1h_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dea1h_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DEA1H - ()>前J平均值</label>
+                  <input name="dea1h_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dea1h_means_limit }}" />   
+                  <input name="dea1h_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dea1h_means_limit_2 }}" />             
+                </div> 
 
-        // 页面加载时获取参数
-        loadParams();
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">K 判断HIST1D向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_hist1d_count" class="form-control form-control-sm border-success" value="{{ defaults.means_hist1d_count }}" />
+                  <input name="means_hist1d_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_hist1d_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">HIST1D - () >K平均值</label>
+                  <input name="hist1d_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.hist1d_means_limit }}" />
+                  <input name="hist1d_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.hist1d_means_limit_2 }}" />
+                </div>
+              <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">L 判断DIF1D向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dif1d_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dif1d_count }}" />
+                  <input name="means_dif1d_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dif1d_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DIF1D - ()>L平均值</label>
+                  <input name="dif1d_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dif1d_means_limit }}" />
+                  <input name="dif1d_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dif1d_means_limit_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">M 判断DEA1D向前查找分钟数(设置为0不生效)</label>
+                  <input name="means_dea1d_count" class="form-control form-control-sm border-success" value="{{ defaults.means_dea1d_count }}" />
+                  <input name="means_dea1d_count_2" class="form-control form-control-sm border-success" value="{{ defaults.means_dea1d_count_2 }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small mb-0 text-success">DEA1D - ()>前M平均值</label>
+                  <input name="dea1d_means_limit" class="form-control form-control-sm border-success" value="{{ defaults.dea1d_means_limit }}" />   
+                  <input name="dea1d_means_limit_2" class="form-control form-control-sm border-success" value="{{ defaults.dea1d_means_limit_2 }}" />             
+                </div> 
+            </div>
+          </div>
+          </div>
+        </div>
+          
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#jdkAuxBody" style="cursor:pointer">JDK辅助参数判断 <span class="float-end">▼</span></div>
+          <div id="jdkAuxBody" class="collapse show">
+          <div class="card-body py-2">
+            <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J15M < </label>
+                  <input name="t0_j15m_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_j15m_limit }}" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J1H < </label>
+                  <input name="t0_j1h_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_j1h_limit }}" />
+                </div>                
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J4H < </label>
+                  <input name="t0_j4h_limit" class="form-control form-control-sm border-success" value="{{ defaults.t0_j4h_limit }}" />                
+                </div> 
+                
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J15M > (开空)</label>
+                  <input name="t0_j15m_limit_kong" class="form-control form-control-sm border-success" value="{{ defaults.t0_j15m_limit_kong }}" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J1H > (开空)</label>
+                  <input name="t0_j1h_limit_kong" class="form-control form-control-sm border-success" value="{{ defaults.t0_j1h_limit_kong }}" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label small mb-0 text-success">J4H > (开空)</label>
+                  <input name="t0_j4h_limit_kong" class="form-control form-control-sm border-success" value="{{ defaults.t0_j4h_limit_kong }}" />
+                </div>                
+            </div>
+          </div>
+          </div>
+        </div>
+            
+        <div class="card mb-2">
+          <div class="card-header py-1 small" data-bs-toggle="collapse" data-bs-target="#priceChangeBody" style="cursor:pointer">价格变化 <span class="float-end">▼</span></div>
+          <div id="priceChangeBody" class="collapse show">
+          <div class="card-body py-2">
+            <div class="row g-2 mb-2">    
+                <div class="col-md-6">
+                <label class="form-label small mb-0">开仓: 价格变化防插针(收盘价*比例)</label>
+                <input name="m_price_change" class="form-control form-control-sm" value="{{ defaults.m_price_change }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">防插针回溯分钟数</label>
+                <input name="m_price_change_minutes" class="form-control form-control-sm" value="{{ defaults.m_price_change_minutes }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">B组防插针阈值(绝对值或比例)</label>
+                <input name="m_price_change_b" class="form-control form-control-sm" value="{{ defaults.m_price_change_b }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">B组防插针回溯分钟数</label>
+                <input name="m_price_change_minutes_b" class="form-control form-control-sm" value="{{ defaults.m_price_change_minutes_b }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">C组防插针阈值(绝对值或比例)</label>
+                <input name="m_price_change_c" class="form-control form-control-sm" value="{{ defaults.m_price_change_c }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">C组防插针回溯分钟数</label>
+                <input name="m_price_change_minutes_c" class="form-control form-control-sm" value="{{ defaults.m_price_change_minutes_c }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">A价格判断分钟数</label>
+                <input name="price_change_count" class="form-control form-control-sm" value="{{ defaults.price_change_count }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">A价格判断变化率</label>
+                <input name="price_change_limit" class="form-control form-control-sm" value="{{ defaults.price_change_limit }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">B价格判断分钟数</label>
+                <input name="price_change_count_b" class="form-control form-control-sm" value="{{ defaults.price_change_count_b }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">B价格判断变化率</label>
+                <input name="price_change_limit_b" class="form-control form-control-sm" value="{{ defaults.price_change_limit_b }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">C价格判断分钟数</label>
+                <input name="price_change_count_c" class="form-control form-control-sm" value="{{ defaults.price_change_count_c }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">C价格判断变化率</label>
+                <input name="price_change_limit_c" class="form-control form-control-sm" value="{{ defaults.price_change_limit_c }}" />
+              </div>
+               <!-- <div class="col-md-4">
+                <label class="form-label small mb-0">开仓: 4H整点+()分钟不开仓</label>
+                <input name="mask_4h" class="form-control form-control-sm" value="{{ defaults.mask_4h }}" />
+              </div> -->
+             
 
-        // 恢复折叠状态
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.collapse').forEach(el => {
-                const id = el.id;
-                if (!id) return;
+            </div>
+          
 
-                const state = localStorage.getItem('param_collapse_' + id);
-                if (state === 'hidden') {
-                    el.classList.remove('show');
-                } else if (state === 'shown') {
-                    el.classList.add('show');
-                }
+            </div>
+            </div>
+            </div>
+            </div>
+       
+        </div>
+    </form>
 
-                el.addEventListener('hidden.bs.collapse', () => {
-                    localStorage.setItem('param_collapse_' + id, 'hidden');
-                });
-                el.addEventListener('shown.bs.collapse', () => {
-                    localStorage.setItem('param_collapse_' + id, 'shown');
-                });
-            });
+    </div>
+  </div>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    (function () {
+      const form = document.getElementById('backtest-form');
+      if (form) {
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
         });
-    </script>
+      }
+
+      document.querySelectorAll('input, textarea, select').forEach((el) => {
+        const tag = (el.tagName || '').toLowerCase();
+        const type = (el.type || '').toLowerCase();
+        if (type === 'radio' || type === 'checkbox' || tag === 'select') {
+          el.disabled = true;
+        } else {
+          el.readOnly = true;
+        }
+      });
+
+      document.querySelectorAll('button').forEach((btn) => {
+        btn.disabled = true;
+      });
+
+      const readonlyHint = document.createElement('div');
+      readonlyHint.className = 'readonly-note mt-2';
+      readonlyHint.textContent = '当前页面为参数查看模式，所有参数均为只读。';
+      const container = document.querySelector('.container-main');
+      if (container) {
+        container.insertAdjacentElement('afterbegin', readonlyHint);
+      }
+    })();
+  </script>
 </body>
 </html>

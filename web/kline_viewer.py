@@ -209,6 +209,22 @@ def get_db_connection():
     return conn
 
 
+def build_readonly_param_defaults():
+    """构造与 start_backtest 模板字段兼容的默认参数。"""
+    defaults = {k.lower(): getattr(config, k) for k in dir(config) if k.isupper()}
+
+    defaults.update({
+        'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'version': defaults.get('version') or 'V5.0',
+        'detailed_logging': defaults.get('detailed_logging', False),
+        'open_maker_price_ratio': defaults.get('open_maker_price_ratio', ''),
+        'open_maker_duration_minutes': defaults.get('open_maker_duration_minutes', ''),
+        'timeout_close_ratio': defaults.get('timeout_close_ratio', ''),
+        'mask_4h': defaults.get('mask_4h', ''),
+    })
+    return defaults
+
+
 @app.route('/')
 @login_required
 def index():
@@ -220,7 +236,8 @@ def index():
 @login_required
 def params_page():
     """交易参数展示页面"""
-    return render_template('trade_params.html')
+    defaults = build_readonly_param_defaults()
+    return render_template('trade_params.html', defaults=defaults)
 
 
 @app.route('/logs')
@@ -784,6 +801,14 @@ def api_config():
                 'DIF均值限制': config.DIF1H_MEANS_LIMIT_2,
                 'DEA均值数量': config.MEANS_DEA1H_COUNT_2,
                 'DEA均值限制': config.DEA1H_MEANS_LIMIT_2,
+            },
+            '均值参数-第二组(4h)': {
+                'HIST均值数量': config.MEANS_HIST4_COUNT_2,
+                'HIST均值限制': config.HIST4_MEANS_LIMIT_2,
+                'DIF均值数量': config.MEANS_DIF4_COUNT_2,
+                'DIF均值限制': config.DIF4_MEANS_LIMIT_2,
+                'DEA均值数量': config.MEANS_DEA4_COUNT_2,
+                'DEA均值限制': config.DEA4_MEANS_LIMIT_2,
             },
             '止盈止损': {
                 '止损比例': config.STOP_LOSS_POINTS,
