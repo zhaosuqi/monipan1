@@ -608,7 +608,6 @@ class TradeEngine:
         """
         # 📊 调试：记录开仓尝试
         ts_str = str(ts)
-        debug_mode = '18:42' in ts_str or '19:39' in ts_str or '19:44' in ts_str
 
         # 始终使用收盘价作为限价挂单价格
         price = row.get('close', price)
@@ -638,33 +637,18 @@ class TradeEngine:
                     )
                     return False
 
-        if debug_mode:
-            self.logger.info(f"🔍 [开仓尝试] {ts_str} | {side} | 价格={price:.2f} | 信号={signal_name}")
 
         # 计算可用资金（扣除已锁定部分）
         leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
-
-        if config.NO_LIMIT_POS:
-            available_capital = 1.0
-            total_balance = 1.0
-        else:
-            available_capital = max(0.0, self.realized_pnl - self.locked_capital)
-            # 使用缓存的账户总余额（由定时同步更新）
-            total_balance = self.cached_total_balance
+      
+        available_capital = max(0.0, self.realized_pnl - self.locked_capital)
+        # 使用缓存的账户总余额（由定时同步更新）
+        total_balance = self.cached_total_balance
 
         # 预留账户总余额的2%作为安全垫，避免资金耗尽导致开仓失败
         reserve_ratio = 0.02 if not config.NO_LIMIT_POS else 0.0
         min_reserve = total_balance * reserve_ratio  # 按缓存的账户总余额计算预留
         tradable_capital = max(0.0, available_capital - min_reserve)
-
-        if debug_mode:
-            self.logger.info(
-                f"💰 [资金检查] 账户总资金={total_balance:.6f} {self.display_asset} | "
-                f"可用资金={available_capital:.6f} {self.display_asset} | "
-                f"预留={min_reserve:.6f} {self.display_asset} | "
-                f"可交易={tradable_capital:.6f} {self.display_asset}"
-            )
-
         if tradable_capital <= 0:
             self.logger.warning(
                 f"❌ [{ts_str}] ❌❌❌ 开仓失败: 可交易资金不足 "
@@ -679,10 +663,7 @@ class TradeEngine:
             if time_since_stoploss < config.STOP_LOSS_HOLD_TIME and side == self.stoploss_side:
                 msg = (f"❌❌❌ 开仓失败: 跳过开仓 - 距离{side}止损仅{time_since_stoploss:.1f}分钟 "
                        f"(冷却期{config.STOP_LOSS_HOLD_TIME}分钟)")
-                if debug_mode:
-                    self.logger.warning(f"❌ [{ts_str}] {msg}")
-                else:
-                    self.logger.info(msg)
+                self.logger.info(msg)
                 return False
 
         # 检查价格是否有效
@@ -701,9 +682,6 @@ class TradeEngine:
         cn = config.CONTRACT_NOTIONAL
         max_contracts = int((tradable_capital * price * leverage) / cn)
 
-        if debug_mode:
-            self.logger.info(f"📊 [合约计算] 价格={price:.2f} | 面值={cn} | 最大合约数={max_contracts}")
-
         # 检查是否足够开仓
         insufficient = (
             config.TP_RATIO_PER_LEVEL > 0 and
@@ -715,10 +693,8 @@ class TradeEngine:
                    f"当前价格={price:.2f}, "
                    f"计算得出={max_contracts}张合约, "
                    f"要求至少={1 / config.TP_RATIO_PER_LEVEL if config.TP_RATIO_PER_LEVEL > 0 else 0:.1f}张")
-            if debug_mode:
-                self.logger.warning(f"❌ [{ts_str}] {msg}")
-            else:
-                self.logger.info(msg)
+
+            self.logger.info(msg)
             return False
 
         # 解析开仓模式：MAKER=限价挂单，TAKER=市价吃单
@@ -726,10 +702,10 @@ class TradeEngine:
         if open_mode not in ('MAKER', 'TAKER'):
             self.logger.warning(f"OPEN_TAKER_OR_MAKER 配置非法: {open_mode}，回退为 TAKER")
             open_mode = 'TAKER'
-        is_maker_open = open_mode == 'MAKER'
+        # is_maker_open = open_mode == 'TAKER'
 
         # 预估手续费并锁定对应资金
-        open_fee_rate = config.MAKER_FEE_RATE if is_maker_open else config.TAKER_FEE_RATE
+        open_fee_rate = 0.00065
 
         required_margin_btc = (max_contracts * cn) / (price * leverage)
         estimated_fee_btc = (max_contracts * cn * open_fee_rate) / price
@@ -747,7 +723,7 @@ class TradeEngine:
         # 🚀 新增: 通过Exchange接口下单
         # ============================================================
         exchange_side = 'BUY' if side == 'long' else 'SELL'
-        open_mode_desc = '限价挂单(MAKER)' if is_maker_open else '市价吃单(TAKER)'
+        open_mode_desc = '限价挂单(MAKER)' 
 
         self.logger.info(
             f"📡 [下单到交易所] {exchange_side} | "
@@ -760,7 +736,7 @@ class TradeEngine:
             filled_contracts = max_contracts
 
             # 按配置选择 MAKER/LIMIT 或 TAKER/MARKET 开仓
-            order_type = 'LIMIT' if is_maker_open else 'MARKET'
+            order_type = 'MARKET'
             order_params = {
                 'symbol': config.SYMBOL,
                 'side': exchange_side,
@@ -771,9 +747,9 @@ class TradeEngine:
                 'trace_id': trace_id,  # 传递 trace_id
                 'kline_close_time': str(row.get('close_time', '')),  # K线收盘时间
             }
-            if is_maker_open:
-                order_params['price'] = float(price)
-                order_params['timeInForce'] = 'GTC'
+            # if is_maker_open:
+            #     order_params['price'] = float(price)
+            #     order_params['timeInForce'] = 'GTC'
 
             order = self.exchange.place_order(**order_params)
 
@@ -788,19 +764,19 @@ class TradeEngine:
             )
 
             # 仅 MAKER 模式发送挂单通知（TAKER 市价单会直接走成交通知）
-            if is_maker_open:
-                try:
-                    self.feishu_bot.send_open_order_placed_notification(
-                        symbol=config.SYMBOL,
-                        side=side,
-                        price=price,
-                        contracts=max_contracts,
-                        signal_name=signal_name,
-                        order_id=str(order.order_id),
-                        ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
-                    )
-                except Exception as e:
-                    self.logger.warning(f"飞书开仓挂单通知发送失败: {e}")
+            # if is_maker_open:
+            #     try:
+            #         self.feishu_bot.send_open_order_placed_notification(
+            #             symbol=config.SYMBOL,
+            #             side=side,
+            #             price=price,
+            #             contracts=max_contracts,
+            #             signal_name=signal_name,
+            #             order_id=str(order.order_id),
+            #             ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
+            #         )
+            #     except Exception as e:
+            #         self.logger.warning(f"飞书开仓挂单通知发送失败: {e}")
 
             # 检测订单状态
             if order.status.value == 'FILLED':
@@ -828,12 +804,12 @@ class TradeEngine:
                 poll_timeout = int(
                     getattr(
                         config,
-                        'OPEN_LIMIT_TIMEOUT_SECONDS' if is_maker_open else 'OPEN_MARKET_TIMEOUT_SECONDS',
-                        180 if is_maker_open else 10
+                        'OPEN_MARKET_TIMEOUT_SECONDS',
+                        10
                     )
                 )
-                poll_interval = 2.0 if is_maker_open else 0.5
-                mode_cn = "限价单" if is_maker_open else "市价单"
+                poll_interval = 0.5
+                mode_cn =  "市价单"
                 self.logger.info(
                     f"⏳ [订单待成交] {mode_cn} {order.order_id} 状态为{order.status.value}，"
                     f"开始轮询等待成交..."
@@ -865,7 +841,7 @@ class TradeEngine:
 
                 # 超时后的兜底处理
                 if final_status is None:
-                    if is_maker_open:
+                    if True:
                         self.logger.warning(
                             f"⌛ [挂单超时] 订单 {order.order_id} 超过 {poll_timeout} 秒未完全成交，准备撤单"
                         )
@@ -882,18 +858,6 @@ class TradeEngine:
                                 final_status = queried_order.status.value
                         except Exception as query_err:
                             self.logger.warning(f"撤单后查询订单异常: {query_err}")
-                    else:
-                        self.logger.warning(
-                            f"⌛ [市价单超时] 订单 {order.order_id} 超过 {poll_timeout} 秒仍未成交"
-                        )
-                        # 市价单无法可靠撤单，直接再查询一次最终状态
-                        try:
-                            queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
-                            if queried_order:
-                                final_order = queried_order
-                                final_status = queried_order.status.value
-                        except Exception as query_err:
-                            self.logger.warning(f"市价单超时后查询订单异常: {query_err}")
 
                 if final_order and final_order.status.value == 'FILLED':
                     # ✅ 订单最终成交
@@ -1080,9 +1044,6 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"飞书开仓通知发送失败: {e}")
 
-        if debug_mode:
-            self.logger.info(f"✅ [{ts_str}] 🎉 开仓成功！{side} {filled_contracts}张 @ {actual_price:.2f}")
-
         # 记录日志
         self.record_log(
             ts,
@@ -1120,22 +1081,20 @@ class TradeEngine:
     def close_position(self, pos: Position, close_time, close_price: float,
                        reason: str, net_btc: Optional[float] = None,
                        pnl_already_applied: bool = False,
-                       real_fee_btc: Optional[float] = None,
-                       real_pnl_btc: Optional[float] = None,
                        close_order_id: Optional[str] = None):
         """
         平仓
+
+        所有交易相关数据优先使用交易所真实成交记录，仅在无法获取时回退到本地计算。
 
         Args:
             pos: 持仓对象
             close_time: 平仓时间(pandas.Timestamp, str, or datetime)
             close_price: 平仓价格
             reason: 平仓原因
-            net_btc: 净盈亏(BTC)，如果为None则计算
+            net_btc: 净盈亏(BTC)，仅在无close_order_id时作为回退使用
             pnl_already_applied: 盈亏是否已经在上游处理
-            real_fee_btc: 从交易所接口获取的真实手续费(BTC)，用于飞书通知
-            real_pnl_btc: 从交易所接口获取的真实实现盈亏(BTC)，用于飞书通知
-            close_order_id: 平仓订单ID，用于获取成交明细
+            close_order_id: 平仓订单ID，用于获取真实成交明细
         """
         # 转换时间戳为pandas.Timestamp
         if not isinstance(close_time, pd.Timestamp):
@@ -1191,29 +1150,58 @@ class TradeEngine:
         notional_usd = cn * pos.contracts
         qty_btc = pos.contracts * pos.contract_size_btc
 
-        # 计算盈亏
-        if pos.side == 'long':
-            gross_usd = (
-                close_price - pos.entry_price
-            ) * (qty_btc / close_price)
+        # 获取真实成交明细（优先使用交易所数据）
+        trade_details = {}
+        trade_id = None
+        real_fee_btc = None
+        real_pnl_btc = None
+        if close_order_id:
+            try:
+                trade_details = self._get_order_trade_details(int(close_order_id))
+                trade_id = trade_details.get('trade_id')
+                real_fee_btc = trade_details.get('real_fee_btc')
+                real_pnl_btc = trade_details.get('real_pnl_btc')
+                if trade_id:
+                    self.logger.info(f"获取到平仓成交记录: trade_id={trade_id}")
+            except Exception as e:
+                self.logger.warning(f"获取平仓成交记录失败: {e}")
+
+        # 优先使用交易所真实成交数据，否则回退到本地计算
+        if real_pnl_btc is not None and real_fee_btc is not None:
+            fee_btc = real_fee_btc
+            gross_btc = real_pnl_btc + real_fee_btc
+            net_btc = real_pnl_btc
+            gross_usd = gross_btc * close_price if close_price else 0.0
+            net_usd = net_btc * close_price if close_price else 0.0
+            close_fee_rate = (fee_btc * close_price / notional_usd) if notional_usd and close_price else config.TAKER_FEE_RATE
+            self.logger.info(
+                f"📊 使用交易所真实成交数据 | "
+                f"手续费={fee_btc:.8f} {self.display_asset} | "
+                f"净盈亏={net_btc:.8f} {self.display_asset} | "
+                f"毛盈亏={gross_btc:.8f} {self.display_asset}"
+            )
         else:
-            gross_usd = (
-                pos.entry_price - close_price
-            ) * (qty_btc / close_price)
+            # 回退到本地计算
+            if pos.side == 'long':
+                gross_usd = (
+                    close_price - pos.entry_price
+                ) * (qty_btc / close_price)
+            else:
+                gross_usd = (
+                    pos.entry_price - close_price
+                ) * (qty_btc / close_price)
 
-        close_fee_rate = config.TAKER_FEE_RATE
+            close_fee_rate = config.TAKER_FEE_RATE
+            fee_btc = (
+                (notional_usd * close_fee_rate) / close_price
+                if close_price else 0.0
+            )
+            gross_btc = gross_usd / close_price if close_price else 0.0
 
-        # 先计算 fee_btc 和 gross_btc（飞书通知需要）
-        fee_btc = (
-            (notional_usd * close_fee_rate) / close_price
-            if close_price else 0.0
-        )
-        gross_btc = gross_usd / close_price if close_price else 0.0
-        
-        if net_btc is None:
-            net_btc = gross_btc - fee_btc
+            if net_btc is None:
+                net_btc = gross_btc - fee_btc
 
-        net_usd = net_btc * close_price if close_price else net_btc
+            net_usd = net_btc * close_price if close_price else net_btc
 
         # 更新已实现盈亏（如果尚未在上游处理）
         if net_btc is not None and not pnl_already_applied:
@@ -1224,8 +1212,7 @@ class TradeEngine:
             cn = config.CONTRACT_NOTIONAL
             entry_price = pos.entry_price
             leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
-            open_mode = str(getattr(config, 'OPEN_TAKER_OR_MAKER', 'MAKER') or 'MAKER').strip().upper()
-            open_fee_rate = config.MAKER_FEE_RATE if open_mode == "MAKER" else config.TAKER_FEE_RATE
+            open_fee_rate = 0
 
             required_margin_btc = (pos.contracts * cn) / (entry_price * leverage) if entry_price > 0 else 0
             estimated_fee_btc = (pos.contracts * cn * open_fee_rate) / entry_price if entry_price > 0 else 0
@@ -1255,7 +1242,6 @@ class TradeEngine:
 
         # 记录平仓到数据库 (TradeRecorder)
         try:
-            # 更新持仓记录为关闭状态
             close_time_str = close_time.isoformat() if hasattr(close_time, 'isoformat') else str(close_time)
             self.trade_recorder.record_position_close(
                 position_id=pos.id,
@@ -1268,21 +1254,10 @@ class TradeEngine:
                 net_pnl=net_usd
             )
 
-            # 获取成交记录，使用成交ID作为 trade_id
-            trade_id = None
-            if close_order_id:
-                try:
-                    trade_details = self._get_order_trade_details(int(close_order_id))
-                    trade_id = trade_details.get('trade_id')
-                    if trade_id:
-                        self.logger.info(f"获取到平仓成交记录: trade_id={trade_id}")
-                except Exception as e:
-                    self.logger.warning(f"获取平仓成交记录失败: {e}")
-
-            # 记录平仓交易（使用成交ID）
+            # 记录平仓交易（trade_id 已在上方获取真实成交明细时取得）
             trade_record = TradeRecord(
                 trace_id=pos.trace_id,
-                trade_id=trade_id,  # 使用成交ID，与同步数据一致
+                trade_id=trade_id,  # 使用真实成交ID
                 symbol=config.SYMBOL,
                 side=pos.side,
                 action=reason.upper() if reason else 'CLOSE',
@@ -1330,18 +1305,8 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"⚠️ 平仓后查询账户余额失败: {e}")
 
-        # 发送飞书平仓通知
+        # 发送飞书平仓通知（所有值已基于真实成交数据或本地计算）
         try:
-            # 优先使用从交易所接口获取的真实数据(BTC)，否则使用本地计算值
-            fee_btc_final = real_fee_btc if real_fee_btc is not None else fee_btc
-            pnl_btc_final = real_pnl_btc if real_pnl_btc is not None else net_btc
-            
-            # 根据真实盈亏重新计算毛利（如果有真实数据）
-            gross_btc_final = gross_btc
-            if real_pnl_btc is not None and real_fee_btc is not None:
-                # 真实毛利 = 真实净利 + 真实手续费
-                gross_btc_final = real_pnl_btc + real_fee_btc
-            
             self.feishu_bot.send_close_position_notification(
                 symbol=config.SYMBOL,
                 side=pos.side,
@@ -1350,9 +1315,9 @@ class TradeEngine:
                 contracts=pos.contracts,
                 entry_time=pos.entry_time,
                 close_time=close_time,
-                gross_btc=gross_btc_final,
-                fee_btc=fee_btc_final,
-                net_btc=pnl_btc_final,
+                gross_btc=gross_btc,
+                fee_btc=fee_btc,
+                net_btc=net_btc,
                 reason=reason,
                 tp_hit=pos.tp_hit if hasattr(pos, 'tp_hit') else [],
                 total_balance_btc=self.cached_total_balance
@@ -1672,16 +1637,8 @@ class TradeEngine:
                     fee_btc * actual_price
                 )
 
-                # 尝试获取真实的成交明细（手续费和实现盈亏）
-                real_fee_btc = None
-                real_pnl_btc = None
-                trade_details = self._get_order_trade_details(order.order_id)
-                real_fee_btc = trade_details.get('real_fee_btc')
-                real_pnl_btc = trade_details.get('real_pnl_btc')
-
-                # 关闭持仓
+                # 关闭持仓（close_position 内部通过 close_order_id 获取真实成交数据）
                 self.close_position(pos, ts, actual_price, 'take_profit_final', net_btc, pnl_already_applied=True,
-                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
                                    close_order_id=str(order.order_id))
                 return True
             else:
@@ -1872,7 +1829,8 @@ class TradeEngine:
         stop_price = self._calculate_stop_price(pos)
         ref_low = low if low is not None else price
         ref_high = high if high is not None else price
-
+        ref_low = price
+        ref_high = price
         # 📊 止损计算日志
         self.logger.debug(
             f"📊 [止损检测] 持仓ID={pos.id} | 方向={pos.side} | "
@@ -2161,17 +2119,8 @@ class TradeEngine:
             fee_btc * price
         )
 
-        # 尝试获取真实的成交明细（手续费和实现盈亏）
-        real_fee_btc = None
-        real_pnl_btc = None
-        if order_id:
-            trade_details = self._get_order_trade_details(order_id)
-            real_fee_btc = trade_details.get('real_fee_btc')
-            real_pnl_btc = trade_details.get('real_pnl_btc')
-
-        # 关闭持仓
+        # 关闭持仓（close_position 内部通过 close_order_id 获取真实成交数据）
         self.close_position(pos, ts, price, reason, net_btc, pnl_already_applied=True,
-                           real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
                            close_order_id=str(order_id) if order_id else None)
 
 
@@ -2388,16 +2337,8 @@ class TradeEngine:
                     fee_btc * actual_price
                 )
 
-                # 尝试获取真实的成交明细（手续费和实现盈亏）
-                real_fee_btc = None
-                real_pnl_btc = None
-                trade_details = self._get_order_trade_details(order.order_id)
-                real_fee_btc = trade_details.get('real_fee_btc')
-                real_pnl_btc = trade_details.get('real_pnl_btc')
-
-                # 关闭持仓
+                # 关闭持仓（close_position 内部通过 close_order_id 获取真实成交数据）
                 self.close_position(pos, ts, actual_price, 'drawdown_close', net_btc, pnl_already_applied=True,
-                                   real_fee_btc=real_fee_btc, real_pnl_btc=real_pnl_btc,
                                    close_order_id=str(order.order_id))
                 return True
             else:

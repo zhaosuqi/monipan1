@@ -856,22 +856,72 @@ def api_config():
 
 @app.route('/api/trades')
 def api_trades():
-    """获取交易记录"""
+    """获取交易记录（按持仓/订单维度聚合）"""
     limit = int(request.args.get('limit', 100))
     start_time = request.args.get('start_time', None)
     end_time = request.args.get('end_time', None)
+    view_mode = request.args.get('view_mode', 'position')  # 'position' 或 'trade'
 
     try:
         from core.trade_recorder import get_trade_recorder
 
         recorder = get_trade_recorder()
-        trades = recorder.get_trades(
-            start_time=start_time,
-            end_time=end_time,
-            limit=limit
-        )
 
-        return jsonify({'success': True, 'data': trades})
+        # 默认按持仓维度展示
+        if view_mode == 'trade':
+            # 返回原始交易明细
+            trades = recorder.get_trades(
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit
+            )
+            return jsonify({'success': True, 'data': trades, 'view_mode': 'trade'})
+        else:
+            # 按持仓维度聚合展示
+            positions = recorder.get_positions(
+                status=None,  # 获取所有状态
+                limit=limit
+            )
+
+            # 格式化持仓数据为订单维度
+            orders = []
+            for pos in positions:
+                # 查询该持仓下的所有交易明细用于统计
+                trades_in_pos = recorder.get_trades(
+                    position_id=pos.get('position_id'),
+                    limit=100
+                )
+
+                # 统计止盈次数
+                tp_count = sum(1 for t in trades_in_pos if t.get('action') == 'TP')
+
+                orders.append({
+                    'order_id': pos.get('position_id'),
+                    'trace_id': pos.get('trace_id'),
+                    'symbol': pos.get('symbol', 'BTCUSD_PERP'),
+                    'side': pos.get('side'),
+                    'status': pos.get('status'),
+                    # 开仓信息
+                    'entry_time': pos.get('open_time'),
+                    'entry_price': pos.get('entry_price'),
+                    'entry_contracts': pos.get('entry_contracts'),
+                    # 平仓信息
+                    'exit_time': pos.get('close_time'),
+                    'exit_price': pos.get('exit_price'),
+                    'exit_contracts': pos.get('exit_contracts'),
+                    # 盈亏统计
+                    'gross_pnl': pos.get('gross_pnl'),
+                    'net_pnl': pos.get('net_pnl'),
+                    'total_fee': pos.get('total_fee_usd'),
+                    # 平仓原因
+                    'exit_reason': pos.get('exit_reason'),
+                    'tp_levels_hit': pos.get('tp_levels_hit'),
+                    'tp_count': tp_count,
+                    # 交易明细数量
+                    'trade_count': len(trades_in_pos)
+                })
+
+            return jsonify({'success': True, 'data': orders, 'view_mode': 'position'})
 
     except Exception as e:
         logger.error(f"获取交易记录失败: {e}")
