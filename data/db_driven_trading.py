@@ -184,8 +184,10 @@ class DBDrivenTrader:
         币本位合约使用BTC作为保证金
         """
         try:
-            # 获取账户信息
-            account_info = self.trade_engine.exchange.get_account_info()
+            # 获取账户信息 - 根据配置的交易对获取对应资产
+            # 从 SYMBOL (如 BTCUSD_PERP) 提取资产符号 (BTC)
+            asset = config.SYMBOL.replace('USD_PERP', '').replace('USDT', '')
+            account_info = self.trade_engine.exchange.get_account_info(asset=asset)
             
             self.current_balance = account_info.total_wallet_balance
             self.available_balance = account_info.available_balance
@@ -199,9 +201,10 @@ class DBDrivenTrader:
             
             self.logger.info(
                 f"💰 余额同步 | "
-                f"总余额: {self.current_balance:.6f} BTC | "
-                f"可用: {self.available_balance:.6f} BTC | "
-                f"未实现盈亏: {self.unrealized_pnl:.6f} BTC"
+                f"资产: {asset} | "
+                f"总余额: {self.current_balance:.6f} {asset} | "
+                f"可用: {self.available_balance:.6f} {asset} | "
+                f"未实现盈亏: {self.unrealized_pnl:.6f} {asset}"
             )
             
             self.last_balance_sync = time.time()
