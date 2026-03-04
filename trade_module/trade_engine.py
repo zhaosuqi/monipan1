@@ -698,10 +698,10 @@ class TradeEngine:
             return False
 
         # 解析开仓模式：MAKER=限价挂单，TAKER=市价吃单
-        open_mode = str(getattr(config, 'OPEN_TAKER_OR_MAKER', 'TAKER') or 'TAKER').strip().upper()
-        if open_mode not in ('MAKER', 'TAKER'):
-            self.logger.warning(f"OPEN_TAKER_OR_MAKER 配置非法: {open_mode}，回退为 TAKER")
-            open_mode = 'TAKER'
+        # open_mode = str(getattr(config, 'OPEN_TAKER_OR_MAKER', 'TAKER') or 'TAKER').strip().upper()
+        # if open_mode not in ('MAKER', 'TAKER'):
+            # self.logger.warning(f"OPEN_TAKER_OR_MAKER 配置非法: {open_mode}，回退为 TAKER")
+        # open_mode = 'TAKER'
         # is_maker_open = open_mode == 'TAKER'
 
         # 预估手续费并锁定对应资金

@@ -40,6 +40,7 @@ def _load_signal_params() -> dict:
     该文件由交易进程通过 SignalCalculator.export_signal_params() 导出，
     直接反映 signal_module 和 trade_engine 真正使用的 config 值。
     若文件不存在则回退到 config 单例。"""
+    logger.info(f"尝试加载运行时参数文件: {_RUNNING_PARAMS_JSON}")
     if _RUNNING_PARAMS_JSON.exists():
         try:
             with open(_RUNNING_PARAMS_JSON, 'r', encoding='utf-8') as f:
