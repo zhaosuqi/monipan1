@@ -53,6 +53,7 @@ def _load_env_file():
 _load_env_file()
 
 from core.config import config
+from core.config_hot_reload import ConfigHotReloader
 from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
 from interaction_module.feishu_bot import FeishuBot
@@ -96,6 +97,9 @@ class DBDrivenTrader:
         self.prev_row: Optional[Dict] = None
         self.rowList: List[Dict] = []
 
+        # 是否已输出启动参数报告
+        self._params_reported: bool = False
+
         
         # 初始化信号计算器
         self.signal_calculator = SignalCalculator()
@@ -106,6 +110,9 @@ class DBDrivenTrader:
 
         # 飞书通知机器人
         self.feishu_bot = FeishuBot()
+
+        # 初始化配置热加载器（每分钟检查 trading_params.json 变更）
+        self.config_reloader = ConfigHotReloader(feishu_bot=self.feishu_bot)
 
         self.logger.info("=" * 60)
         self.logger.info("数据驱动交易器初始化完成")
@@ -366,7 +373,15 @@ class DBDrivenTrader:
         close_price = row.get('close', 0)
         
         self.logger.info(f"[{open_time}] 处理新数据 | 收盘价={close_price:.2f}")
-        
+
+        # 首次处理信号时，输出所有交易参数到日志和飞书
+        if not self._params_reported:
+            self._params_reported = True
+            try:
+                self.config_reloader.report_all_params()
+            except Exception as e:
+                self.logger.warning(f"输出启动参数报告失败: {e}")
+
         # 更新价格历史
         if close_price > 0:
             self.price_history.append(close_price)
@@ -435,7 +450,10 @@ class DBDrivenTrader:
                 # 定时同步余额
                 if self._should_sync_balance():
                     self.sync_balance()
-                
+
+                # 检查交易参数热更新（内部自带 60 秒节流）
+                self.config_reloader.check_and_reload()
+
                 # 等待下一次轮询
                 time.sleep(POLL_INTERVAL)
                 

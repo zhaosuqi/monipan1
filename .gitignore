@@ -38,3 +38,4 @@ data/*.db-wal
 
 # Caches
 *.cache/
+core/trading_params.json
