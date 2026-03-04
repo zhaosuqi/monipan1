@@ -7,7 +7,10 @@
 集成移动平均值实时计算功能
 """
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -1015,3 +1018,210 @@ class SignalCalculator:
             #     logger.debug(f"✗ 空头被过滤: {'; '.join(reasons)}")
             return False, "; ".join(reasons)
             return False, "; ".join(reasons)
+
+    # ==================== 参数导出接口 ====================
+
+    @staticmethod
+    def get_signal_params() -> Dict[str, Any]:
+        """
+        返回信号计算和交易引擎实际使用的全部运行时参数。
+
+        直接从 config 单例读取当前值，保证与运行时一致。
+        key 使用 config 属性名的小写形式。
+        """
+        return {
+            # ===== 基础配置 =====
+            'symbol': config.SYMBOL,
+            'version': getattr(config, 'VERSION', 'V5.0'),
+            'kline_interval': config.KLINE_INTERVAL,
+
+            # ===== 仓位配置 =====
+            'position_btc': config.POSITION_BTC,
+            'contract_notional': config.CONTRACT_NOTIONAL,
+            'leverage': config.LEVERAGE,
+            'position_nominal': config.POSITION_NOMINAL,
+            'no_limit_pos': config.NO_LIMIT_POS,
+
+            # ===== MACD指标参数 =====
+            'macd_fast': config.MACD_FAST,
+            'macd_slow': config.MACD_SLOW,
+            'macd_signal': config.MACD_SIGNAL,
+
+            # ===== T0参数-15分钟 =====
+            't0_hist15_limit': config.T0_HIST15_LIMIT,
+            't0_hist15_limit_min': config.T0_HIST15_LIMIT_MIN,
+            't0_hist15_limit_max': config.T0_HIST15_LIMIT_MAX,
+            't0_hist15_count': config.T0_HIST15_COUNT,
+            't0_dif15_limit': config.T0_DIF15_LIMIT,
+            't0_dif15_limit_min': config.T0_DIF15_LIMIT_MIN,
+            't0_j15m_limit': config.T0_J15M_LIMIT,
+            't0_j15m_limit_kong': config.T0_J15M_LIMIT_KONG,
+
+            # ===== T0参数-1小时 =====
+            't0_hist1h_limit': config.T0_HIST1H_LIMIT,
+            't0_hist1h_limit_min': config.T0_HIST1H_LIMIT_MIN,
+            't0_dif1h_limit': config.T0_DIF1H_LIMIT,
+            't0_dif1h_limit_min': config.T0_DIF1H_LIMIT_MIN,
+            't0_j1h_limit': config.T0_J1H_LIMIT,
+            't0_j1h_limit_kong': config.T0_J1H_LIMIT_KONG,
+
+            # ===== T0参数-4小时 =====
+            't0_hist4_limit': config.T0_HIST4_LIMIT,
+            't0_hist4_limit_min': config.T0_HIST4_LIMIT_MIN,
+            't0_dif4_limit': config.T0_DIF4_LIMIT,
+            't0_dif4_limit_min': config.T0_DIF4_LIMIT_MIN,
+            't0_j4h_limit': config.T0_J4H_LIMIT,
+            't0_j4h_limit_kong': config.T0_J4H_LIMIT_KONG,
+            't0_dea4_limit': config.T0_DEA4_LIMIT,
+
+            # ===== T0参数-1天 =====
+            't0_hist1d_limit': config.T0_HIST1D_LIMIT,
+            't0_hist1d_limit_min': config.T0_HIST1D_LIMIT_MIN,
+            't0_dif1d_limit': config.T0_DIF1D_LIMIT,
+            't0_dif1d_limit_min': config.T0_DIF1D_LIMIT_MIN,
+            't0_hist_1d_limit': config.T0_HIST_1D_LIMIT,
+
+            # ===== 均值参数-第一组(15m) =====
+            'means_hist15_count': config.MEANS_HIST15_COUNT,
+            'hist15_means_limit': config.HIST15_MEANS_LIMIT,
+            'means_dif15_count': config.MEANS_DIF15_COUNT,
+            'dif15_means_limit': config.DIF15_MEANS_LIMIT,
+            'means_dea15_count': config.MEANS_DEA15_COUNT,
+            'dea15_means_limit': config.DEA15_MEANS_LIMIT,
+
+            # ===== 均值参数-第一组(1h) =====
+            'means_hist1h_count': config.MEANS_HIST1H_COUNT,
+            'hist1h_means_limit': config.HIST1H_MEANS_LIMIT,
+            'means_dif1h_count': config.MEANS_DIF1H_COUNT,
+            'dif1h_means_limit': config.DIF1H_MEANS_LIMIT,
+            'means_dea1h_count': config.MEANS_DEA1H_COUNT,
+            'dea1h_means_limit': config.DEA1H_MEANS_LIMIT,
+
+            # ===== 均值参数-第一组(4h) =====
+            'means_hist4_count': config.MEANS_HIST4_COUNT,
+            'hist4_means_limit': config.HIST4_MEANS_LIMIT,
+            'means_dif4_count': config.MEANS_DIF4_COUNT,
+            'dif4_means_limit': config.DIF4_MEANS_LIMIT,
+            'means_dea4_count': config.MEANS_DEA4_COUNT,
+            'dea4_means_limit': config.DEA4_MEANS_LIMIT,
+
+            # ===== 均值参数-第一组(1d) =====
+            'means_hist1d_count': config.MEANS_HIST1D_COUNT,
+            'hist1d_means_limit': config.HIST1D_MEANS_LIMIT,
+            'means_dif1d_count': config.MEANS_DIF1D_COUNT,
+            'dif1d_means_limit': config.DIF1D_MEANS_LIMIT,
+            'means_dea1d_count': config.MEANS_DEA1D_COUNT,
+            'dea1d_means_limit': config.DEA1D_MEANS_LIMIT,
+
+            # ===== 均值参数-第二组(15m) =====
+            'means_hist15_count_2': config.MEANS_HIST15_COUNT_2,
+            'hist15_means_limit_2': config.HIST15_MEANS_LIMIT_2,
+            'means_dif15_count_2': config.MEANS_DIF15_COUNT_2,
+            'dif15_means_limit_2': config.DIF15_MEANS_LIMIT_2,
+            'means_dea15_count_2': config.MEANS_DEA15_COUNT_2,
+            'dea15_means_limit_2': config.DEA15_MEANS_LIMIT_2,
+
+            # ===== 均值参数-第二组(1h) =====
+            'means_hist1h_count_2': config.MEANS_HIST1H_COUNT_2,
+            'hist1h_means_limit_2': config.HIST1H_MEANS_LIMIT_2,
+            'means_dif1h_count_2': config.MEANS_DIF1H_COUNT_2,
+            'dif1h_means_limit_2': config.DIF1H_MEANS_LIMIT_2,
+            'means_dea1h_count_2': config.MEANS_DEA1H_COUNT_2,
+            'dea1h_means_limit_2': config.DEA1H_MEANS_LIMIT_2,
+
+            # ===== 均值参数-第二组(4h) =====
+            'means_hist4_count_2': config.MEANS_HIST4_COUNT_2,
+            'hist4_means_limit_2': config.HIST4_MEANS_LIMIT_2,
+            'means_dif4_count_2': config.MEANS_DIF4_COUNT_2,
+            'dif4_means_limit_2': config.DIF4_MEANS_LIMIT_2,
+            'means_dea4_count_2': config.MEANS_DEA4_COUNT_2,
+            'dea4_means_limit_2': config.DEA4_MEANS_LIMIT_2,
+
+            # ===== 均值参数-第二组(1d) =====
+            'means_hist1d_count_2': config.MEANS_HIST1D_COUNT_2,
+            'hist1d_means_limit_2': config.HIST1D_MEANS_LIMIT_2,
+            'means_dif1d_count_2': config.MEANS_DIF1D_COUNT_2,
+            'dif1d_means_limit_2': config.DIF1D_MEANS_LIMIT_2,
+            'means_dea1d_count_2': config.MEANS_DEA1D_COUNT_2,
+            'dea1d_means_limit_2': config.DEA1D_MEANS_LIMIT_2,
+
+            # ===== 价格变化参数 =====
+            'price_change_limit': config.PRICE_CHANGE_LIMIT,
+            'price_change_count': config.PRICE_CHANGE_COUNT,
+            'price_change_limit_b': config.PRICE_CHANGE_LIMIT_B,
+            'price_change_count_b': config.PRICE_CHANGE_COUNT_B,
+            'price_change_limit_c': config.PRICE_CHANGE_LIMIT_C,
+            'price_change_count_c': config.PRICE_CHANGE_COUNT_C,
+            'price_change_limit_d': config.PRICE_CHANGE_LIMIT_D,
+            'price_change_count_d': config.PRICE_CHANGE_COUNT_D,
+            'price_change_limit_e': config.PRICE_CHANGE_LIMIT_E,
+            'price_change_count_e': config.PRICE_CHANGE_COUNT_E,
+            'm_price_change': config.M_PRICE_CHANGE,
+            'm_price_change_minutes': config.M_PRICE_CHANGE_MINUTES,
+            'm_price_change_b': config.M_PRICE_CHANGE_B,
+            'm_price_change_minutes_b': config.M_PRICE_CHANGE_MINUTES_B,
+            'm_price_change_c': config.M_PRICE_CHANGE_C,
+            'm_price_change_minutes_c': config.M_PRICE_CHANGE_MINUTES_C,
+            'm_price_change_d': config.M_PRICE_CHANGE_D,
+            'm_price_change_minutes_d': config.M_PRICE_CHANGE_MINUTES_D,
+            'm_price_change_e': config.M_PRICE_CHANGE_E,
+            'm_price_change_minutes_e': config.M_PRICE_CHANGE_MINUTES_E,
+
+            # ===== 止盈止损 =====
+            'stop_loss_points': config.STOP_LOSS_POINTS,
+            'tp_levels': list(config.TP_LEVELS) if config.TP_LEVELS else [],
+            'tp_ratio_per_level': config.TP_RATIO_PER_LEVEL,
+            'drawdown_points': config.DRAWDOWN_POINTS,
+            'stop_loss_hold_time': config.STOP_LOSS_HOLD_TIME,
+            'close_time_minutes': config.CLOSE_TIME_MINUTES,
+            'close_decay_points': config.CLOSE_DECAY_POINTS,
+            'timeout_close_ratio': config.TIMEOUT_CLOSE_RATIO,
+
+            # ===== T1参数 =====
+            't1_t0_hist_change': config.T1_T0_HIST_CHANGE,
+            't1_t0_dif_change': config.T1_T0_DIF_CHANGE,
+            't1_t0_dea_change': config.T1_T0_DEA_CHANGE,
+            't1_t0_hist_limit': config.T1_T0_HIST_LIMIT,
+            't1_hist15_limit': config.T1_HIST15_LIMIT,
+            't1_hist15_max': config.T1_HIST15_MAX,
+            't1_dif4_limit': config.T1_DIF4_LIMIT,
+
+            # ===== 特殊参数 =====
+            'hist4_extreme_limit': config.HIST4_EXTREME_LIMIT,
+            'hist4_neutral_band': config.HIST4_NEUTRAL_BAND,
+            'dif4_t0_min_change': config.DIF4_T0_MIN_CHANGE,
+            'enable_ma5_ma10': config.ENABLE_MA5_MA10,
+            't0_lock_enabled': config.T0_LOCK_ENABLED,
+
+            # ===== 手续费 =====
+            'maker_fee_rate': config.MAKER_FEE_RATE,
+            'taker_fee_rate': config.TAKER_FEE_RATE,
+            'fee_rate': config.FEE_RATE,
+            'open_taker_or_maker': config.OPEN_TAKER_OR_MAKER,
+            'open_maker_price_ratio': config.OPEN_MAKER_PRICE_RATIO,
+            'open_maker_duration_minutes': config.OPEN_MAKER_DURATION_MINUTES,
+        }
+
+    @staticmethod
+    def export_signal_params(filepath: str = None):
+        """
+        将当前运行时参数导出为 JSON 文件，供 Web 等外部模块读取。
+
+        Args:
+            filepath: 导出路径，默认 data/running_signal_params.json
+        """
+        if filepath is None:
+            filepath = str(
+                Path(__file__).parent.parent / 'data' / 'running_signal_params.json'
+            )
+
+        params = SignalCalculator.get_signal_params()
+        tz_east8 = timezone(timedelta(hours=8))
+        params['_exported_at'] = datetime.now(tz_east8).strftime('%Y-%m-%d %H:%M:%S')
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(params, f, indent=2, ensure_ascii=False)
+            logger.debug(f"运行时参数已导出: {filepath}")
+        except Exception as e:
+            logger.error(f"导出运行时参数失败: {e}")

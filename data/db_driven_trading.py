@@ -432,6 +432,13 @@ class DBDrivenTrader:
         # 首次同步余额
         self.logger.info("同步交易所余额...")
         self.sync_balance()
+
+        # 启动时导出运行时参数（供Web读取）
+        try:
+            SignalCalculator.export_signal_params()
+            self.logger.info("运行时参数已导出到 data/running_signal_params.json")
+        except Exception as e:
+            self.logger.warning(f"导出运行时参数失败: {e}")
         
         self.logger.info("开始监控数据库...")
         self.logger.info(f"最后处理时间: {self.last_processed_time}")
@@ -453,6 +460,12 @@ class DBDrivenTrader:
 
                 # 检查交易参数热更新（内部自带 60 秒节流）
                 self.config_reloader.check_and_reload()
+
+                # 热更新后重新导出运行时参数（供Web读取）
+                try:
+                    SignalCalculator.export_signal_params()
+                except Exception:
+                    pass
 
                 # 等待下一次轮询
                 time.sleep(POLL_INTERVAL)

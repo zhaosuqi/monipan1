@@ -30,16 +30,19 @@ from core.logger import get_logger
 
 logger = get_logger('kline_viewer')
 
-# 交易参数JSON文件路径
-_TRADING_PARAMS_JSON = Path(__file__).parent.parent / 'core' / 'trading_params.json'
+# 运行时参数文件路径（由交易引擎通过 SignalCalculator.export_signal_params() 导出）
+_RUNNING_PARAMS_JSON = Path(__file__).parent.parent / 'data' / 'running_signal_params.json'
 
 
-def _load_trading_params() -> dict:
-    """从 trading_params.json 读取实际交易引擎使用的参数。
+def _load_signal_params() -> dict:
+    """从 running_signal_params.json 读取交易引擎实际运行时使用的参数。
+
+    该文件由交易进程通过 SignalCalculator.export_signal_params() 导出，
+    直接反映 signal_module 和 trade_engine 真正使用的 config 值。
     若文件不存在则回退到 config 单例。"""
-    if _TRADING_PARAMS_JSON.exists():
+    if _RUNNING_PARAMS_JSON.exists():
         try:
-            with open(_TRADING_PARAMS_JSON, 'r', encoding='utf-8') as f:
+            with open(_RUNNING_PARAMS_JSON, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
             pass
@@ -230,9 +233,9 @@ def get_db_connection():
 
 def build_readonly_param_defaults():
     """构造与 start_backtest 模板字段兼容的默认参数。
-    优先从 trading_params.json 读取（与交易引擎一致）。"""
-    # 先从 JSON 文件读取实际交易引擎参数
-    defaults = _load_trading_params()
+    从 signal_module 导出的运行时参数读取（与交易引擎实际使用值一致）。"""
+    # 从 signal_module 导出的运行时参数文件读取
+    defaults = _load_signal_params()
 
     defaults.update({
         'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -730,30 +733,31 @@ def api_events():
 
 @app.route('/api/config')
 def api_config():
-    """获取交易参数配置（直接从 trading_params.json 读取，与交易引擎一致）"""
+    """获取交易参数配置（从 signal_module 导出的运行时参数读取，反映信号计算实际使用值）"""
     try:
-        p = _load_trading_params()
+        p = _load_signal_params()
 
         # 组织参数（从 JSON 字典取值，key 全小写）
         params = {
             '基础配置': {
                 '交易对': p.get('symbol', config.SYMBOL),
-                'K线间隔': config.KLINE_INTERVAL,
+                'K线间隔': p.get('kline_interval', config.KLINE_INTERVAL),
                 '回测模式': config.REPLAY_MODE,
                 '数据库模拟': config.DB_SIM_MODE,
                 '版本': p.get('version', 'V5.0'),
+                '参数快照时间': p.get('_exported_at', '未知'),
             },
             '仓位配置': {
-                '初始资金(BTC)': config.POSITION_BTC,
-                '合约名义价值(USD)': config.CONTRACT_NOTIONAL,
-                '杠杆倍数': config.LEVERAGE,
+                '初始资金(BTC)': p.get('position_btc', config.POSITION_BTC),
+                '合约名义价值(USD)': p.get('contract_notional', config.CONTRACT_NOTIONAL),
+                '杠杆倍数': p.get('leverage', config.LEVERAGE),
                 '仓位名义价值': p.get('position_nominal', config.POSITION_NOMINAL),
                 '无限制仓位': p.get('no_limit_pos', False),
             },
             'MACD指标参数': {
-                'Fast周期': config.MACD_FAST,
-                'Slow周期': config.MACD_SLOW,
-                'Signal周期': config.MACD_SIGNAL,
+                'Fast周期': p.get('macd_fast', config.MACD_FAST),
+                'Slow周期': p.get('macd_slow', config.MACD_SLOW),
+                'Signal周期': p.get('macd_signal', config.MACD_SIGNAL),
             },
             'T0参数-15分钟': {
                 'HIST上限': p.get('t0_hist15_limit', 9999),
