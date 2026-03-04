@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 先加载 .env 文件
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import json
@@ -18,14 +19,32 @@ import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, render_template, request, session, redirect, url_for
+from flask import (Flask, jsonify, redirect, render_template, request, session,
+                   url_for)
 
 from core.config import config
 from core.logger import get_logger
 
 logger = get_logger('kline_viewer')
+
+# 交易参数JSON文件路径
+_TRADING_PARAMS_JSON = Path(__file__).parent.parent / 'core' / 'trading_params.json'
+
+
+def _load_trading_params() -> dict:
+    """从 trading_params.json 读取实际交易引擎使用的参数。
+    若文件不存在则回退到 config 单例。"""
+    if _TRADING_PARAMS_JSON.exists():
+        try:
+            with open(_TRADING_PARAMS_JSON, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 回退：从 config 取
+    return {k.lower(): getattr(config, k) for k in dir(config) if k.isupper()}
 
 app = Flask(__name__, template_folder='templates')
 app.config['SECRET_KEY'] = 'kline-viewer-secret-change-this-in-production'
@@ -210,8 +229,10 @@ def get_db_connection():
 
 
 def build_readonly_param_defaults():
-    """构造与 start_backtest 模板字段兼容的默认参数。"""
-    defaults = {k.lower(): getattr(config, k) for k in dir(config) if k.isupper()}
+    """构造与 start_backtest 模板字段兼容的默认参数。
+    优先从 trading_params.json 读取（与交易引擎一致）。"""
+    # 先从 JSON 文件读取实际交易引擎参数
+    defaults = _load_trading_params()
 
     defaults.update({
         'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -709,23 +730,25 @@ def api_events():
 
 @app.route('/api/config')
 def api_config():
-    """获取交易参数配置"""
+    """获取交易参数配置（直接从 trading_params.json 读取，与交易引擎一致）"""
     try:
-        from core.config import config
+        p = _load_trading_params()
 
-        # 组织参数
+        # 组织参数（从 JSON 字典取值，key 全小写）
         params = {
             '基础配置': {
-                '交易对': config.SYMBOL,
+                '交易对': p.get('symbol', config.SYMBOL),
                 'K线间隔': config.KLINE_INTERVAL,
                 '回测模式': config.REPLAY_MODE,
                 '数据库模拟': config.DB_SIM_MODE,
+                '版本': p.get('version', 'V5.0'),
             },
             '仓位配置': {
                 '初始资金(BTC)': config.POSITION_BTC,
                 '合约名义价值(USD)': config.CONTRACT_NOTIONAL,
                 '杠杆倍数': config.LEVERAGE,
-                '仓位名义价值': config.POSITION_NOMINAL,
+                '仓位名义价值': p.get('position_nominal', config.POSITION_NOMINAL),
+                '无限制仓位': p.get('no_limit_pos', False),
             },
             'MACD指标参数': {
                 'Fast周期': config.MACD_FAST,
@@ -733,117 +756,158 @@ def api_config():
                 'Signal周期': config.MACD_SIGNAL,
             },
             'T0参数-15分钟': {
-                'HIST上限': config.T0_HIST15_LIMIT,
-                'HIST下限': config.T0_HIST15_LIMIT_MIN,
-                'DIF上限': config.T0_DIF15_LIMIT,
-                'DIF下限': config.T0_DIF15_LIMIT_MIN,
-                'J上限(多)': config.T0_J15M_LIMIT,
-                'J下限(空)': config.T0_J15M_LIMIT_KONG,
+                'HIST上限': p.get('t0_hist15_limit', 9999),
+                'HIST下限': p.get('t0_hist15_limit_min', 0),
+                'HIST最大': p.get('t0_hist15_limit_max', -9999),
+                'HIST计数': p.get('t0_hist15_count', 7),
+                'DIF上限': p.get('t0_dif15_limit', 1000),
+                'DIF下限': p.get('t0_dif15_limit_min', -9999),
+                'J上限(多)': p.get('t0_j15m_limit', 999),
+                'J下限(空)': p.get('t0_j15m_limit_kong', -999),
             },
             'T0参数-1小时': {
-                'HIST上限': config.T0_HIST1H_LIMIT,
-                'HIST下限': config.T0_HIST1H_LIMIT_MIN,
-                'DIF上限': config.T0_DIF1H_LIMIT,
-                'DIF下限': config.T0_DIF1H_LIMIT_MIN,
-                'J上限(多)': config.T0_J1H_LIMIT,
-                'J下限(空)': config.T0_J1H_LIMIT_KONG,
+                'HIST上限': p.get('t0_hist1h_limit', 9999),
+                'HIST下限': p.get('t0_hist1h_limit_min', 0),
+                'DIF上限': p.get('t0_dif1h_limit', 1000),
+                'DIF下限': p.get('t0_dif1h_limit_min', -9999),
+                'J上限(多)': p.get('t0_j1h_limit', 999),
+                'J下限(空)': p.get('t0_j1h_limit_kong', -999),
             },
             'T0参数-4小时': {
-                'HIST上限': config.T0_HIST4_LIMIT,
-                'HIST下限': config.T0_HIST4_LIMIT_MIN,
-                'DIF上限': config.T0_DIF4_LIMIT,
-                'DIF下限': config.T0_DIF4_LIMIT_MIN,
-                'J上限(多)': config.T0_J4H_LIMIT,
-                'J下限(空)': config.T0_J4H_LIMIT_KONG,
+                'HIST上限': p.get('t0_hist4_limit', 9999),
+                'HIST下限': p.get('t0_hist4_limit_min', 0),
+                'DIF上限': p.get('t0_dif4_limit', 1000),
+                'DIF下限': p.get('t0_dif4_limit_min', -1500),
+                'J上限(多)': p.get('t0_j4h_limit', 113),
+                'J下限(空)': p.get('t0_j4h_limit_kong', -13),
+                'DEA4限制': p.get('t0_dea4_limit', -9999),
             },
             'T0参数-1天': {
-                'HIST上限': config.T0_HIST1D_LIMIT,
-                'HIST下限': config.T0_HIST1D_LIMIT_MIN,
-                'DIF上限': config.T0_DIF1D_LIMIT,
-                'DIF下限': config.T0_DIF1D_LIMIT_MIN,
+                'HIST上限': p.get('t0_hist1d_limit', 9999),
+                'HIST下限': p.get('t0_hist1d_limit_min', -9999),
+                'DIF上限': p.get('t0_dif1d_limit', 9999),
+                'DIF下限': p.get('t0_dif1d_limit_min', -9999),
+                'HIST_1D限制': p.get('t0_hist_1D_limit', -999),
             },
             '均值参数-第一组(15m)': {
-                'HIST均值数量': config.MEANS_HIST15_COUNT,
-                'HIST均值限制': config.HIST15_MEANS_LIMIT,
-                'DIF均值数量': config.MEANS_DIF15_COUNT,
-                'DIF均值限制': config.DIF15_MEANS_LIMIT,
-                'DEA均值数量': config.MEANS_DEA15_COUNT,
-                'DEA均值限制': config.DEA15_MEANS_LIMIT,
+                'HIST均值数量': p.get('means_hist15_count', 5),
+                'HIST均值限制': p.get('hist15_means_limit', 1),
+                'DIF均值数量': p.get('means_dif15_count', 5),
+                'DIF均值限制': p.get('dif15_means_limit', 1),
+                'DEA均值数量': p.get('means_dea15_count', 5),
+                'DEA均值限制': p.get('dea15_means_limit', 1),
             },
             '均值参数-第一组(1h)': {
-                'HIST均值数量': config.MEANS_HIST1H_COUNT,
-                'HIST均值限制': config.HIST1H_MEANS_LIMIT,
-                'DIF均值数量': config.MEANS_DIF1H_COUNT,
-                'DIF均值限制': config.DIF1H_MEANS_LIMIT,
-                'DEA均值数量': config.MEANS_DEA1H_COUNT,
-                'DEA均值限制': config.DEA1H_MEANS_LIMIT,
+                'HIST均值数量': p.get('means_hist1h_count', 5),
+                'HIST均值限制': p.get('hist1h_means_limit', 1),
+                'DIF均值数量': p.get('means_dif1h_count', 5),
+                'DIF均值限制': p.get('dif1h_means_limit', 1),
+                'DEA均值数量': p.get('means_dea1h_count', 5),
+                'DEA均值限制': p.get('dea1h_means_limit', 1),
             },
             '均值参数-第一组(4h)': {
-                'HIST均值数量': config.MEANS_HIST4_COUNT,
-                'HIST均值限制': config.HIST4_MEANS_LIMIT,
-                'DIF均值数量': config.MEANS_DIF4_COUNT,
-                'DIF均值限制': config.DIF4_MEANS_LIMIT,
-                'DEA均值数量': config.MEANS_DEA4_COUNT,
-                'DEA均值限制': config.DEA4_MEANS_LIMIT,
+                'HIST均值数量': p.get('means_hist4_count', 5),
+                'HIST均值限制': p.get('hist4_means_limit', 1),
+                'DIF均值数量': p.get('means_dif4_count', 5),
+                'DIF均值限制': p.get('dif4_means_limit', 1),
+                'DEA均值数量': p.get('means_dea4_count', 5),
+                'DEA均值限制': p.get('dea4_means_limit', 1),
+            },
+            '均值参数-第一组(1d)': {
+                'HIST均值数量': p.get('means_hist1d_count', 360),
+                'HIST均值限制': p.get('hist1d_means_limit', 0),
+                'DIF均值数量': p.get('means_dif1d_count', 0),
+                'DIF均值限制': p.get('dif1d_means_limit', 0),
+                'DEA均值数量': p.get('means_dea1d_count', 0),
+                'DEA均值限制': p.get('dea1d_means_limit', 0),
             },
             '均值参数-第二组(15m)': {
-                'HIST均值数量': config.MEANS_HIST15_COUNT_2,
-                'HIST均值限制': config.HIST15_MEANS_LIMIT_2,
-                'DIF均值数量': config.MEANS_DIF15_COUNT_2,
-                'DIF均值限制': config.DIF15_MEANS_LIMIT_2,
-                'DEA均值数量': config.MEANS_DEA15_COUNT_2,
-                'DEA均值限制': config.DEA15_MEANS_LIMIT_2,
+                'HIST均值数量': p.get('means_hist15_count_2', 10),
+                'HIST均值限制': p.get('hist15_means_limit_2', 1),
+                'DIF均值数量': p.get('means_dif15_count_2', 60),
+                'DIF均值限制': p.get('dif15_means_limit_2', 1),
+                'DEA均值数量': p.get('means_dea15_count_2', 10),
+                'DEA均值限制': p.get('dea15_means_limit_2', 1),
             },
             '均值参数-第二组(1h)': {
-                'HIST均值数量': config.MEANS_HIST1H_COUNT_2,
-                'HIST均值限制': config.HIST1H_MEANS_LIMIT_2,
-                'DIF均值数量': config.MEANS_DIF1H_COUNT_2,
-                'DIF均值限制': config.DIF1H_MEANS_LIMIT_2,
-                'DEA均值数量': config.MEANS_DEA1H_COUNT_2,
-                'DEA均值限制': config.DEA1H_MEANS_LIMIT_2,
+                'HIST均值数量': p.get('means_hist1h_count_2', 10),
+                'HIST均值限制': p.get('hist1h_means_limit_2', 1),
+                'DIF均值数量': p.get('means_dif1h_count_2', 10),
+                'DIF均值限制': p.get('dif1h_means_limit_2', 1),
+                'DEA均值数量': p.get('means_dea1h_count_2', 15),
+                'DEA均值限制': p.get('dea1h_means_limit_2', 1),
             },
             '均值参数-第二组(4h)': {
-                'HIST均值数量': config.MEANS_HIST4_COUNT_2,
-                'HIST均值限制': config.HIST4_MEANS_LIMIT_2,
-                'DIF均值数量': config.MEANS_DIF4_COUNT_2,
-                'DIF均值限制': config.DIF4_MEANS_LIMIT_2,
-                'DEA均值数量': config.MEANS_DEA4_COUNT_2,
-                'DEA均值限制': config.DEA4_MEANS_LIMIT_2,
+                'HIST均值数量': p.get('means_hist4_count_2', 10),
+                'HIST均值限制': p.get('hist4_means_limit_2', 1),
+                'DIF均值数量': p.get('means_dif4_count_2', 10),
+                'DIF均值限制': p.get('dif4_means_limit_2', 1),
+                'DEA均值数量': p.get('means_dea4_count_2', 10),
+                'DEA均值限制': p.get('dea4_means_limit_2', -3),
+            },
+            '均值参数-第二组(1d)': {
+                'HIST均值数量': p.get('means_hist1d_count_2', 0),
+                'HIST均值限制': p.get('hist1d_means_limit_2', 0),
+                'DIF均值数量': p.get('means_dif1d_count_2', 120),
+                'DIF均值限制': p.get('dif1d_means_limit_2', 0),
+                'DEA均值数量': p.get('means_dea1d_count_2', 0),
+                'DEA均值限制': p.get('dea1d_means_limit_2', 0),
             },
             '止盈止损': {
-                '止损比例': config.STOP_LOSS_POINTS,
-                '止盈级别': config.TP_LEVELS,
-                '回撤比例': config.DRAWDOWN_POINTS,
-                '止损持仓时间': config.STOP_LOSS_HOLD_TIME,
+                '止损比例': p.get('stop_loss_points', 0.02),
+                '止盈级别': p.get('tp_levels', [1.006, 1.012, 1.018, 1.024, 1.03]),
+                '止盈每级比例': p.get('tp_ratio_per_level', 0.0),
+                '回撤比例': p.get('drawdown_points', 0.0002),
+                '止损持仓时间': p.get('stop_loss_hold_time', 0),
+                '超时平仓分钟': p.get('close_time_minutes', 9999),
+                '超时衰减点数': p.get('close_decay_points', 9999),
+                '超时平仓比例': p.get('timeout_close_ratio', 0.0001),
             },
             '价格变化参数': {
-                '价格变化限制A': config.PRICE_CHANGE_LIMIT,
-                '价格变化计数A': config.PRICE_CHANGE_COUNT,
-                '价格变化限制B': config.PRICE_CHANGE_LIMIT_B,
-                '价格变化计数B': config.PRICE_CHANGE_COUNT_B,
-                '分钟价格变化A': config.M_PRICE_CHANGE,
-                '分钟数A': config.M_PRICE_CHANGE_MINUTES,
-                '分钟价格变化B': config.M_PRICE_CHANGE_B,
-                '分钟数B': config.M_PRICE_CHANGE_MINUTES_B,
+                '价格变化限制A': p.get('price_change_limit', 0.02),
+                '价格变化计数A': p.get('price_change_count', 5),
+                '价格变化限制B': p.get('price_change_limit_b', 0.025),
+                '价格变化计数B': p.get('price_change_count_b', 10),
+                '价格变化限制C': p.get('price_change_limit_c', 0.03),
+                '价格变化计数C': p.get('price_change_count_c', 60),
+                '价格变化限制D': p.get('price_change_limit_d', 0.01),
+                '价格变化计数D': p.get('price_change_count_d', 0),
+                '价格变化限制E': p.get('price_change_limit_e', 0.01),
+                '价格变化计数E': p.get('price_change_count_e', 0),
+                '分钟价格变化A': p.get('m_price_change', 0.008),
+                '分钟数A': p.get('m_price_change_minutes', 1),
+                '分钟价格变化B': p.get('m_price_change_b', 0.012),
+                '分钟数B': p.get('m_price_change_minutes_b', 5),
+                '分钟价格变化C': p.get('m_price_change_c', 0.015),
+                '分钟数C': p.get('m_price_change_minutes_c', 10),
+                '分钟价格变化D': p.get('m_price_change_d', 0.9999),
+                '分钟数D': p.get('m_price_change_minutes_d', 30),
+                '分钟价格变化E': p.get('m_price_change_e', 0.9999),
+                '分钟数E': p.get('m_price_change_minutes_e', 60),
             },
             'T1参数': {
-                'T0_HIST变化': config.T1_T0_HIST_CHANGE,
-                'T0_DIF变化': config.T1_T0_DIF_CHANGE,
-                'HIST15限制': config.T1_HIST15_LIMIT,
-                'HIST15最大': config.T1_HIST15_MAX,
-                'DIF4限制': config.T1_DIF4_LIMIT,
+                'T0_HIST变化': p.get('t1_t0_hist_change', 15),
+                'T0_DIF变化': p.get('t1_t0_dif_change', 15),
+                'T0_DEA变化': p.get('t1_t0_dea_change', -9999),
+                'T0_HIST限制': p.get('t1_t0_hist_limit', -9999),
+                'HIST15限制': p.get('t1_hist15_limit', 30),
+                'HIST15最大': p.get('t1_hist15_max', 50),
+                'DIF4限制': p.get('t1_dif4_limit', 1200),
             },
             '特殊参数': {
-                '4H极端限制': config.HIST4_EXTREME_LIMIT,
-                '4H中性区间': config.HIST4_NEUTRAL_BAND,
-                '启用MA5/MA10': config.ENABLE_MA5_MA10,
-                'T0锁仓': config.T0_LOCK_ENABLED,
+                '4H极端限制': p.get('hist4_extreme_limit', 9999),
+                '4H中性区间': p.get('hist4_neutral_band', 0),
+                'DIF4_T0最小变化': p.get('dif4_t0_min_change', 9999),
+                '启用MA5/MA10': p.get('enable_ma5_ma10', False),
+                'T0锁仓': p.get('t0_lock_enabled', False),
             },
             '手续费': {
-                'Maker费率': config.MAKER_FEE_RATE,
-                'Taker费率': config.TAKER_FEE_RATE,
-                '默认费率': config.FEE_RATE,
-                '开仓类型': config.OPEN_TAKER_OR_MAKER,
+                'Maker费率': p.get('maker_fee_rate', 0.0002),
+                'Taker费率': p.get('taker_fee_rate', 0.0006),
+                '默认费率': p.get('fee_rate', 0.0004),
+                '开仓类型': p.get('open_taker_or_maker', 'TAKER'),
+                'Maker价格比例': p.get('open_maker_price_ratio', 0.0),
+                'Maker持续分钟': p.get('open_maker_duration_minutes', 3),
             },
         }
 
