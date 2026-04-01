@@ -14,6 +14,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
+import pandas as pd
+from openpyxl.styles import Font
+
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,6 +31,117 @@ from core.database import get_db
 from exchange_layer.exchange_factory import create_exchange
 
 logger = get_logger('sync_trades')
+
+
+def build_monthly_export_output_path(base_dir: Path, start_label: str, end_label: str) -> Path:
+    """构建月度交易导出文件路径"""
+    return base_dir / 'data' / 'exports' / f'binance_trades_{start_label}_{end_label}.xlsx'
+
+
+def normalize_trade_rows(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """将币安成交明细转换为导出友好的原始行"""
+    rows: List[Dict[str, Any]] = []
+
+    for trade in trades:
+        trade_time_ms = trade.get('time', 0) or 0
+        trade_time = datetime.utcfromtimestamp(trade_time_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
+
+        rows.append({
+            'trade_time': trade_time,
+            'symbol': trade.get('symbol', ''),
+            'side': trade.get('side', ''),
+            'buyer': bool(trade.get('buyer', False)),
+            'maker': bool(trade.get('maker', False)),
+            'price': float(trade.get('price', 0) or 0),
+            'qty': float(trade.get('qty', 0) or 0),
+            'quoteQty': float(trade.get('quoteQty', 0) or 0),
+            'commission': float(trade.get('commission', 0) or 0),
+            'commissionAsset': trade.get('commissionAsset', ''),
+            'realizedPnl': float(trade.get('realizedPnl', 0) or 0),
+            'orderId': trade.get('orderId'),
+            'trade_id': trade.get('id'),
+            'positionSide': trade.get('positionSide', ''),
+        })
+
+    return rows
+
+
+def build_summary_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """按交易对和方向聚合导出汇总行"""
+    if not raw_rows:
+        return []
+
+    df = pd.DataFrame(raw_rows)
+    grouped = (
+        df.groupby(['symbol', 'side'], dropna=False)
+        .agg(
+            trade_count=('trade_id', 'count'),
+            total_qty=('qty', 'sum'),
+            total_quote_qty=('quoteQty', 'sum'),
+            total_commission=('commission', 'sum'),
+            total_realized_pnl=('realizedPnl', 'sum'),
+            first_trade_time=('trade_time', 'min'),
+            last_trade_time=('trade_time', 'max'),
+        )
+        .reset_index()
+    )
+
+    return grouped.to_dict(orient='records')
+
+
+def _format_export_sheet(worksheet) -> None:
+    """对导出的工作表做轻量格式化"""
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+
+    worksheet.freeze_panes = 'A2'
+
+    for column_cells in worksheet.columns:
+        values = [str(cell.value) if cell.value is not None else '' for cell in column_cells]
+        max_length = max((len(value) for value in values), default=0)
+        worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 30)
+
+
+def write_trade_export_excel(
+    output_path: Path,
+    raw_rows: List[Dict[str, Any]],
+    summary_rows: List[Dict[str, Any]]
+) -> Path:
+    """将原始成交和汇总结果写入 Excel"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_df = pd.DataFrame(raw_rows)
+    summary_df = pd.DataFrame(summary_rows)
+
+    if raw_df.empty:
+        raw_df = pd.DataFrame(columns=[
+            'trade_time', 'symbol', 'side', 'buyer', 'maker', 'price', 'qty',
+            'quoteQty', 'commission', 'commissionAsset', 'realizedPnl',
+            'orderId', 'trade_id', 'positionSide'
+        ])
+
+    if summary_df.empty:
+        summary_df = pd.DataFrame(columns=[
+            'symbol', 'side', 'trade_count', 'total_qty', 'total_quote_qty',
+            'total_commission', 'total_realized_pnl', 'first_trade_time',
+            'last_trade_time'
+        ])
+
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        raw_df.to_excel(writer, sheet_name='raw_trades', index=False)
+        summary_df.to_excel(writer, sheet_name='summary', index=False)
+
+        _format_export_sheet(writer.book['raw_trades'])
+        _format_export_sheet(writer.book['summary'])
+
+    return output_path
+
+
+def get_monthly_export_window(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:
+    """获取最近 30 天导出时间窗口"""
+    end_time = now or datetime.now()
+    start_time = end_time - timedelta(days=30)
+    return start_time, end_time
 
 
 class BinanceTradeSync:
@@ -79,6 +193,52 @@ class BinanceTradeSync:
                 json.dump(self.sync_state, f, indent=2)
         except Exception as e:
             logger.warning(f"保存同步状态失败: {e}")
+
+    def export_monthly_trades_to_excel(
+        self,
+        output_path: Optional[str] = None,
+        base_dir: Optional[Path] = None,
+        now: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """导出最近 30 天成交记录到 Excel"""
+        start_time, end_time = get_monthly_export_window(now=now)
+
+        api_key = getattr(self.exchange, 'api_key', None)
+        api_secret = getattr(self.exchange, 'api_secret', None)
+        if api_key is not None and api_secret is not None and (not api_key or not api_secret):
+            return {'success': False, 'error': '缺少币安正式盘 API Key/Secret 配置'}
+
+        if not self.exchange.is_connected():
+            if not self.exchange.connect():
+                return {'success': False, 'error': '连接币安失败'}
+
+        project_root = base_dir or Path(__file__).resolve().parent.parent
+        if output_path:
+            export_path = Path(output_path).expanduser().resolve()
+        else:
+            export_path = build_monthly_export_output_path(
+                base_dir=project_root,
+                start_label=start_time.strftime('%Y%m%d'),
+                end_label=end_time.strftime('%Y%m%d'),
+            )
+
+        try:
+            trades = self._fetch_trades_batch(start_time, end_time, raise_on_error=True)
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+        raw_rows = normalize_trade_rows(trades)
+        summary_rows = build_summary_rows(raw_rows)
+        write_trade_export_excel(export_path, raw_rows, summary_rows)
+
+        return {
+            'success': True,
+            'trade_count': len(raw_rows),
+            'summary_count': len(summary_rows),
+            'output_path': str(export_path),
+            'start_time': start_time.isoformat(sep=' '),
+            'end_time': end_time.isoformat(sep=' '),
+        }
 
     def sync_positions(self) -> Dict[str, Any]:
         """
@@ -428,7 +588,12 @@ class BinanceTradeSync:
 
         return all_results
 
-    def _fetch_trades_batch(self, start_time: datetime, end_time: datetime) -> List[Dict]:
+    def _fetch_trades_batch(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        raise_on_error: bool = False
+    ) -> List[Dict]:
         """
         分批获取交易数据
 
@@ -451,9 +616,12 @@ class BinanceTradeSync:
                         'limit': limit
                     }
                     if from_id:
-                        params['fromId'] = from_id
+                        params['from_id'] = from_id
 
-                    trades = self.exchange.get_user_trades(**params)
+                    trades = self.exchange.get_user_trades(
+                        **params,
+                        raise_on_error=raise_on_error
+                    )
 
                     if not trades:
                         break
@@ -486,6 +654,8 @@ class BinanceTradeSync:
 
         except Exception as e:
             logger.error(f"获取交易数据失败: {e}", exc_info=True)
+            if raise_on_error:
+                raise
 
         return all_trades
 
@@ -743,6 +913,9 @@ def main():
     parser.add_argument('--live', action='store_true', help='使用币安正式盘(Live)')
     parser.add_argument('--sync-positions', action='store_true',
                         help='仅同步持仓信息，不同步交易记录')
+    parser.add_argument('--export-monthly-excel', action='store_true',
+                        help='导出最近30天成交记录到Excel')
+    parser.add_argument('--output', type=str, help='导出的Excel文件路径')
 
     args = parser.parse_args()
 
@@ -755,6 +928,27 @@ def main():
         exchange_type = 'testnet'
     elif args.live:
         exchange_type = 'live'
+
+    if args.export_monthly_excel:
+        if args.testnet:
+            logger.error("月度Excel导出仅支持正式盘，请使用 --live 或不传测试网参数")
+            sys.exit(1)
+
+        live_sync = BinanceTradeSync(exchange_type='live')
+        result = live_sync.export_monthly_trades_to_excel(output_path=args.output)
+
+        print(f"\n{'='*50}")
+        if result['success']:
+            print("Excel导出成功!")
+            print(f"  交易条数: {result.get('trade_count', 0)}")
+            print(f"  汇总行数: {result.get('summary_count', 0)}")
+            print(f"  时间范围: {result.get('start_time')} ~ {result.get('end_time')}")
+            print(f"  文件路径: {result.get('output_path')}")
+        else:
+            print(f"Excel导出失败: {result.get('error')}")
+            sys.exit(1)
+        print(f"{'='*50}")
+        return
 
     sync = BinanceTradeSync(exchange_type=exchange_type)
 

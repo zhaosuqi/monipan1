@@ -78,28 +78,31 @@ class ConfigHotReloader:
         except Exception as e:
             self.logger.error(f"初始加载交易参数失败: {e}", exc_info=True)
 
-    def check_and_reload(self):
+    def check_and_reload(self) -> bool:
         """
         检查 JSON 文件是否有变化，有变化则重新加载并通知。
         应在主循环中调用，内部自带 60 秒节流。
+
+        Returns:
+            bool: 如果参数发生了实际变更并重载成功返回 True，否则返回 False
         """
         now = time.time()
 
         # 节流：不到检查间隔则跳过
         if now - self.last_check_time < CHECK_INTERVAL:
-            return
+            return False
 
         self.last_check_time = now
 
         if not self.json_path.exists():
-            return
+            return False
 
         try:
             current_mtime = self.json_path.stat().st_mtime
 
             # 文件未修改
             if current_mtime <= self.last_mtime:
-                return
+                return False
 
             self.logger.info("检测到交易参数文件变更，开始重新加载...")
 
@@ -110,6 +113,7 @@ class ConfigHotReloader:
             # 比较差异
             changes = self._diff_params(self.last_params, new_params)
 
+            reloaded = False
             if changes:
                 # 应用新参数
                 self._apply_params(new_params)
@@ -121,6 +125,7 @@ class ConfigHotReloader:
                 self._notify_changes(changes)
 
                 self.logger.info(f"交易参数热加载完成，{len(changes)} 个参数已更新")
+                reloaded = True
             else:
                 self.logger.info("文件已修改但参数值无变化")
 
@@ -128,10 +133,14 @@ class ConfigHotReloader:
             self.last_mtime = current_mtime
             self.last_params = new_params
 
+            return reloaded
+
         except json.JSONDecodeError as e:
             self.logger.error(f"交易参数 JSON 格式错误: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"交易参数热加载异常: {e}", exc_info=True)
+            return False
 
     def _diff_params(self, old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """

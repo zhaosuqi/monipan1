@@ -7,8 +7,15 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from binance.cm_futures import CMFutures
 from binance.error import ParameterRequiredError
+
+try:
+    from binance.cm_futures import CMFutures
+except ImportError:  # pragma: no cover - 取决于本地安装的 Binance SDK 版本
+    CMFutures = None
+    from binance.client import Client as BinanceClient
+else:  # pragma: no cover - 取决于本地安装的 Binance SDK 版本
+    BinanceClient = None
 
 from core.logger import get_logger
 from interaction_module.feishu_bot import FeishuBot
@@ -42,30 +49,49 @@ class BinanceExchange(BaseExchange):
     def connect(self) -> bool:
         """连接到币安交易所"""
         try:
-            if self.testnet:
-                # 测试网 - 初始化时传入 base_url
-                self.client = CMFutures(
-                    key=self.api_key,
-                    secret=self.api_secret,
-                    base_url='https://testnet.binancefuture.com'
-                )
-                self.logger.info("连接到币安测试网")
+            if CMFutures is not None:
+                if self.testnet:
+                    # 测试网 - 初始化时传入 base_url
+                    self.client = CMFutures(
+                        key=self.api_key,
+                        secret=self.api_secret,
+                        base_url='https://testnet.binancefuture.com'
+                    )
+                    self.logger.info("连接到币安测试网")
+                else:
+                    # 实盘 - 使用默认 base_url
+                    self.client = CMFutures(
+                        key=self.api_key,
+                        secret=self.api_secret
+                    )
+                    self.logger.info("连接到币安实盘")
             else:
-                # 实盘 - 使用默认 base_url
-                self.client = CMFutures(
-                    key=self.api_key,
-                    secret=self.api_secret
+                self.client = BinanceClient(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    testnet=self.testnet,
+                    ping=False,
                 )
-                self.logger.info("连接到币安实盘")
+                self.logger.info("连接到币安%s（python-binance兼容模式）", "测试网" if self.testnet else "实盘")
 
             # 测试连接
-            self.client.exchange_info()
+            if hasattr(self.client, 'exchange_info'):
+                self.client.exchange_info()
+            elif hasattr(self.client, 'futures_coin_exchange_info'):
+                self.client.futures_coin_exchange_info()
+            else:
+                raise AttributeError("客户端缺少 exchange_info/futures_coin_exchange_info 接口")
             
             # 获取持仓模式
             try:
                 # 检查是否开启双向持仓
                 # get_position_mode返回 {'dualSidePosition': True/False}
-                pos_mode = self.client.get_position_mode()
+                if hasattr(self.client, 'get_position_mode'):
+                    pos_mode = self.client.get_position_mode()
+                elif hasattr(self.client, 'futures_coin_get_position_mode'):
+                    pos_mode = self.client.futures_coin_get_position_mode()
+                else:
+                    raise AttributeError("客户端缺少 position mode 查询接口")
                 self.hedge_mode = pos_mode.get('dualSidePosition', False)
                 mode_str = "双向持仓(Hedge Mode)" if self.hedge_mode else "单向持仓(One-Way Mode)"
                 self.logger.info(f"持仓模式: {mode_str}")
@@ -134,7 +160,12 @@ class BinanceExchange(BaseExchange):
                 f"endTime={params.get('endTime')} ({end_time})"
             )
 
-            klines = self.client.klines(**params)
+            if hasattr(self.client, 'klines'):
+                klines = self.client.klines(**params)
+            elif hasattr(self.client, 'futures_coin_klines'):
+                klines = self.client.futures_coin_klines(**params)
+            else:
+                raise AttributeError("客户端缺少 klines/futures_coin_klines 接口")
 
             result = []
             for kline in klines:
@@ -558,6 +589,8 @@ class BinanceExchange(BaseExchange):
             # 兼容不同版本 python-binance 的 CMFutures 方法名
             if hasattr(self.client, 'position_information'):
                 positions = self.client.position_information(symbol=symbol)
+            elif hasattr(self.client, 'futures_coin_position_information'):
+                positions = self.client.futures_coin_position_information(symbol=symbol)
             elif hasattr(self.client, 'position_risk'):
                 positions = self.client.position_risk(symbol=symbol)
             elif hasattr(self.client, 'get_position_risk'):
@@ -598,7 +631,14 @@ class BinanceExchange(BaseExchange):
             )
             return None
 
-    def get_user_trades(self, symbol: str, order_id: Optional[int] = None, limit: int = 500) -> List[Dict[str, Any]]:
+    def get_user_trades(
+        self,
+        symbol: str,
+        order_id: Optional[int] = None,
+        limit: int = 500,
+        from_id: Optional[int] = None,
+        raise_on_error: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         拉取用户成交明细（user_trades）
 
@@ -606,6 +646,8 @@ class BinanceExchange(BaseExchange):
             symbol: 交易对
             order_id: 可选，按 orderId 查询
             limit: 最大条数
+            from_id: 可选，分页起始成交 ID
+            raise_on_error: 查询失败时是否抛出异常
 
         Returns:
             成交字典列表
@@ -616,14 +658,34 @@ class BinanceExchange(BaseExchange):
 
             # CMFutures 使用 get_account_trades 方法
             if order_id is not None:
-                trades = self.client.get_account_trades(symbol=symbol, orderId=int(order_id))
+                if hasattr(self.client, 'get_account_trades'):
+                    trades = self.client.get_account_trades(symbol=symbol, orderId=int(order_id))
+                elif hasattr(self.client, 'futures_coin_account_trades'):
+                    trades = self.client.futures_coin_account_trades(symbol=symbol, orderId=int(order_id))
+                else:
+                    raise AttributeError("客户端缺少 account_trades 查询接口")
             else:
+                params: Dict[str, Any] = {'symbol': symbol, 'limit': limit}
+                if from_id is not None:
+                    params['fromId'] = int(from_id)
                 try:
-                    trades = self.client.get_account_trades(symbol=symbol, limit=limit)
+                    if hasattr(self.client, 'get_account_trades'):
+                        trades = self.client.get_account_trades(**params)
+                    elif hasattr(self.client, 'futures_coin_account_trades'):
+                        trades = self.client.futures_coin_account_trades(**params)
+                    else:
+                        raise AttributeError("客户端缺少 account_trades 查询接口")
                 except TypeError:
-                    trades = self.client.get_account_trades(symbol=symbol)
+                    if hasattr(self.client, 'get_account_trades'):
+                        trades = self.client.get_account_trades(symbol=symbol)
+                    elif hasattr(self.client, 'futures_coin_account_trades'):
+                        trades = self.client.futures_coin_account_trades(symbol=symbol)
+                    else:
+                        raise AttributeError("客户端缺少 account_trades 查询接口")
 
             return trades or []
         except Exception as e:
             self.logger.warning(f"获取 user_trades 失败: {e}")
+            if raise_on_error:
+                raise
             return []

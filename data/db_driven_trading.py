@@ -459,13 +459,12 @@ class DBDrivenTrader:
                     self.sync_balance()
 
                 # 检查交易参数热更新（内部自带 60 秒节流）
-                self.config_reloader.check_and_reload()
-
-                # 热更新后重新导出运行时参数（供Web读取）
-                try:
-                    SignalCalculator.export_signal_params()
-                except Exception:
-                    pass
+                if self.config_reloader.check_and_reload():
+                    # 热更新后重新导出运行时参数（供Web读取）
+                    try:
+                        SignalCalculator.export_signal_params()
+                    except Exception:
+                        pass
 
                 # 等待下一次轮询
                 time.sleep(POLL_INTERVAL)
