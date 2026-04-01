@@ -637,6 +637,8 @@ class BinanceExchange(BaseExchange):
         order_id: Optional[int] = None,
         limit: int = 500,
         from_id: Optional[int] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
         raise_on_error: bool = False
     ) -> List[Dict[str, Any]]:
         """
@@ -647,6 +649,8 @@ class BinanceExchange(BaseExchange):
             order_id: 可选，按 orderId 查询
             limit: 最大条数
             from_id: 可选，分页起始成交 ID
+            start_time: 可选，查询开始时间
+            end_time: 可选，查询结束时间
             raise_on_error: 查询失败时是否抛出异常
 
         Returns:
@@ -665,9 +669,16 @@ class BinanceExchange(BaseExchange):
                 else:
                     raise AttributeError("客户端缺少 account_trades 查询接口")
             else:
-                params: Dict[str, Any] = {'symbol': symbol, 'limit': limit}
+                params: Dict[str, Any] = {
+                    'symbol': symbol,
+                    'limit': min(limit, 100),
+                }
                 if from_id is not None:
                     params['fromId'] = int(from_id)
+                if start_time is not None:
+                    params['startTime'] = int(start_time.timestamp() * 1000)
+                if end_time is not None:
+                    params['endTime'] = int(end_time.timestamp() * 1000)
                 try:
                     if hasattr(self.client, 'get_account_trades'):
                         trades = self.client.get_account_trades(**params)

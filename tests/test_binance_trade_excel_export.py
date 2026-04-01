@@ -205,3 +205,56 @@ def test_export_monthly_trades_to_excel_returns_error_when_fetch_fails(tmp_path)
 
     assert result['success'] is False
     assert result['error'] == 'API权限不足'
+
+
+def test_fetch_trades_batch_uses_time_windows_and_splits_when_page_hits_limit():
+    sync = BinanceTradeSync.__new__(BinanceTradeSync)
+    sync.symbol = 'BTCUSD_PERP'
+
+    calls = []
+    base = datetime(2026, 3, 1, 0, 0, 0)
+
+    def make_trade(trade_id, ts):
+        return {
+            'id': trade_id,
+            'orderId': 1000 + trade_id,
+            'time': int(ts.timestamp() * 1000),
+            'symbol': 'BTCUSD_PERP',
+            'side': 'BUY',
+            'price': '1',
+            'qty': '1',
+            'quoteQty': '1',
+            'commission': '0',
+            'commissionAsset': 'BTC',
+            'realizedPnl': '0',
+        }
+
+    first_half = [make_trade(i, base + timedelta(hours=1, minutes=i)) for i in range(60)]
+    second_half = [make_trade(100 + i, base + timedelta(hours=13, minutes=i)) for i in range(40)]
+
+    class FakeExchange:
+        def get_user_trades(self, **kwargs):
+            calls.append(kwargs)
+            start_time = kwargs['start_time']
+            end_time = kwargs['end_time']
+            if start_time == base and end_time == base + timedelta(days=1) - timedelta(milliseconds=1):
+                return first_half + second_half
+            if start_time == base and end_time <= base + timedelta(hours=12):
+                return first_half
+            if start_time >= base + timedelta(hours=11, minutes=59):
+                return second_half
+            return []
+
+    sync.exchange = FakeExchange()
+
+    trades = sync._fetch_trades_batch(
+        start_time=base,
+        end_time=base + timedelta(days=1) - timedelta(milliseconds=1),
+        raise_on_error=True,
+    )
+
+    assert len(trades) == 100
+    assert len(calls) == 3
+    assert calls[0]['limit'] == 100
+    assert 'start_time' in calls[0]
+    assert 'end_time' in calls[0]

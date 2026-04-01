@@ -144,6 +144,14 @@ def get_monthly_export_window(now: Optional[datetime] = None) -> Tuple[datetime,
     return start_time, end_time
 
 
+def _to_milliseconds(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+
+def _from_milliseconds(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000)
+
+
 class BinanceTradeSync:
     """币安交易数据同步器"""
 
@@ -602,52 +610,40 @@ class BinanceTradeSync:
         - 时间范围建议不超过7天
         """
         all_trades = []
+        seen_trade_ids = set()
 
         try:
             # 使用 exchange 层的 get_user_trades 方法
             if hasattr(self.exchange, 'get_user_trades'):
-                # 币安API限制最多1000条，如果数据量大需要分页
-                limit = 1000
-                from_id = None
+                current_start = start_time
+                chunk_size = timedelta(days=1)
 
-                while True:
-                    params = {
-                        'symbol': self.symbol,
-                        'limit': limit
-                    }
-                    if from_id:
-                        params['from_id'] = from_id
-
-                    trades = self.exchange.get_user_trades(
-                        **params,
-                        raise_on_error=raise_on_error
+                while current_start <= end_time:
+                    current_end = min(
+                        current_start + chunk_size - timedelta(milliseconds=1),
+                        end_time
                     )
 
-                    if not trades:
-                        break
+                    trades = self._fetch_trades_in_window(
+                        window_start=current_start,
+                        window_end=current_end,
+                        raise_on_error=raise_on_error,
+                    )
 
-                    # 过滤时间范围
                     for trade in trades:
-                        trade_time_ms = trade.get('time', 0)
-                        trade_time = datetime.fromtimestamp(trade_time_ms / 1000)
+                        trade_id = trade.get('id')
+                        dedupe_key = (
+                            trade_id,
+                            trade.get('orderId'),
+                            trade.get('time'),
+                        )
+                        if dedupe_key in seen_trade_ids:
+                            continue
+                        seen_trade_ids.add(dedupe_key)
+                        all_trades.append(trade)
 
-                        if start_time <= trade_time <= end_time:
-                            all_trades.append(trade)
-                        elif trade_time < start_time:
-                            # 已经超出时间范围（按时间倒序）
-                            return all_trades
-
-                    # 如果返回数量不足limit，说明没有更多数据了
-                    if len(trades) < limit:
-                        break
-
-                    # 使用最后一条的ID作为下一次的起始
-                    from_id = trades[-1].get('id')
-                    if not from_id:
-                        break
-
-                    # 避免触发频率限制
-                    time.sleep(0.1)
+                    current_start = current_end + timedelta(milliseconds=1)
+                    time.sleep(0.05)
 
             else:
                 logger.error("交易所接口不支持 get_user_trades 方法")
@@ -657,7 +653,79 @@ class BinanceTradeSync:
             if raise_on_error:
                 raise
 
-        return all_trades
+        return sorted(all_trades, key=lambda trade: (trade.get('time', 0), trade.get('id', 0)))
+
+    def _fetch_trades_in_window(
+        self,
+        window_start: datetime,
+        window_end: datetime,
+        raise_on_error: bool = False,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        在指定时间窗内获取成交。
+
+        当单个时间窗命中接口上限时，继续将时间窗二分，直到每个子窗口内的
+        记录数低于上限，从而避免漏掉历史成交。
+        """
+        trades = self.exchange.get_user_trades(
+            symbol=self.symbol,
+            limit=limit,
+            start_time=window_start,
+            end_time=window_end,
+            raise_on_error=raise_on_error,
+        )
+
+        filtered_trades = []
+        for trade in trades:
+            trade_time = datetime.fromtimestamp((trade.get('time', 0) or 0) / 1000)
+            if window_start <= trade_time <= window_end:
+                filtered_trades.append(trade)
+
+        if len(filtered_trades) < limit:
+            return filtered_trades
+
+        start_ms = _to_milliseconds(window_start)
+        end_ms = _to_milliseconds(window_end)
+
+        if end_ms - start_ms <= 1000:
+            logger.warning(
+                f"时间窗 {window_start} ~ {window_end} 已细化到 1 秒但仍达到上限 {limit}，"
+                f"该窗口可能仍存在截断"
+            )
+            return filtered_trades
+
+        mid_ms = start_ms + (end_ms - start_ms) // 2
+        left_end = _from_milliseconds(mid_ms - 1)
+        right_start = _from_milliseconds(mid_ms)
+
+        left_trades = self._fetch_trades_in_window(
+            window_start=window_start,
+            window_end=left_end,
+            raise_on_error=raise_on_error,
+            limit=limit,
+        )
+        right_trades = self._fetch_trades_in_window(
+            window_start=right_start,
+            window_end=window_end,
+            raise_on_error=raise_on_error,
+            limit=limit,
+        )
+
+        merged = []
+        seen_ids = set()
+        for trade in left_trades + right_trades:
+            dedupe_key = (
+                trade.get('id'),
+                trade.get('orderId'),
+                trade.get('time'),
+            )
+            if dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            merged.append(trade)
+
+        return sorted(merged, key=lambda trade: (trade.get('time', 0), trade.get('id', 0)))
 
     def _sync_to_local(self, trades: List[Dict]) -> Dict[str, int]:
         """
