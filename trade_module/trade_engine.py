@@ -213,6 +213,84 @@ class TradeEngine:
 
     # ------------------ 外部触发开仓 ------------------
 
+    def _supports_remote_stop_loss(self) -> bool:
+        """仅在真实交易所场景启用远端保护止损。"""
+        return self.exchange.__class__.__name__ != 'MockExchange'
+
+    def _place_initial_stop_loss_order(self, pos: Position, ts: pd.Timestamp) -> bool:
+        """开仓后立刻在交易所挂保护止损单。"""
+        if not self._supports_remote_stop_loss():
+            self.logger.info("跳过远端保护止损单: 当前为本地模拟交易所")
+            return False
+
+        stop_price = self._calculate_stop_price(pos)
+        close_side = 'SELL' if pos.side == 'long' else 'BUY'
+
+        try:
+            order = self.exchange.place_order(
+                symbol=config.SYMBOL,
+                side=close_side,
+                order_type='STOP_MARKET',
+                quantity=float(pos.contracts),
+                stop_price=stop_price,
+                business_order_type='SL',
+                trace_id=pos.trace_id,
+                kline_close_time=str(ts),
+                closePosition=True,
+                workingType='MARK_PRICE',
+            )
+        except Exception as exc:
+            self.logger.error(f"挂保护止损单异常: {exc}", exc_info=True)
+            return False
+
+        pos.sl_order_attempts += 1
+        pos.sl_order_last_time = ts
+
+        if order.status.value in ['REJECTED', 'EXPIRED', 'CANCELED']:
+            self.logger.error(
+                f"保护止损单下单失败 | 持仓ID={pos.id} | 状态={order.status.value} | 止损价={stop_price:.2f}"
+            )
+            return False
+
+        pos.sl_order_id = str(order.order_id)
+        self.logger.info(
+            f"🛡️ 已挂远端保护止损单 | 持仓ID={pos.id} | 订单ID={pos.sl_order_id} | "
+            f"方向={close_side} | 止损价={stop_price:.2f} | workingType=MARK_PRICE"
+        )
+        return True
+
+    def _reconcile_remote_stop_loss_fill(self, pos: Position, ts: pd.Timestamp) -> bool:
+        """当交易所已无持仓时，检查是否是远端保护止损单触发。"""
+        if not pos.sl_order_id:
+            return False
+
+        try:
+            order = self.exchange.get_order(config.SYMBOL, pos.sl_order_id)
+        except Exception as exc:
+            self.logger.warning(f"查询远端止损单失败: {exc}")
+            return False
+
+        if not order or order.status.value != 'FILLED':
+            return False
+
+        fallback_price = order.stop_price or self._calculate_stop_price(pos)
+        actual_price = self._poll_close_order_price(
+            order.order_id,
+            fallback_price=fallback_price,
+        )
+        self.logger.warning(
+            f"🔄 检测到远端保护止损单已成交 | 持仓ID={pos.id} | "
+            f"止损单ID={order.order_id} | 成交价={actual_price:.2f}"
+        )
+        self._close_position_after_sl(
+            pos,
+            ts,
+            actual_price,
+            reason='stop_loss_remote',
+            order_id=str(order.order_id),
+        )
+        return True
+
     # ------------------ 远端订单巡检与反向同步 ------------------
     def sync_positions_from_exchange(self, ts: pd.Timestamp, price: float) -> bool:
         """
@@ -233,6 +311,9 @@ class TradeEngine:
         # 交易所无持仓
         if remote_amt == 0:
             if self.positions:
+                for pos in list(self.positions):
+                    if self._reconcile_remote_stop_loss_fill(pos, ts):
+                        return True
                 old_positions = [(p.side, p.entry_price, p.contracts) for p in self.positions]
                 self.logger.warning(
                     f"🔄 持仓同步: 交易所无持仓，清除本地持仓 | "
@@ -971,6 +1052,11 @@ class TradeEngine:
 
         self.positions.append(pos)
         self.triggers_count += 1
+
+        try:
+            self._place_initial_stop_loss_order(pos, ts)
+        except Exception as e:
+            self.logger.error(f"挂开仓保护止损单失败: {e}", exc_info=True)
 
         # 记录开仓到数据库 (TradeRecorder)
         try:

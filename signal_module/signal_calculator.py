@@ -1222,6 +1222,6 @@ class SignalCalculator:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(params, f, indent=2, ensure_ascii=False)
-            logger.debug(f"运行时参数已导出: {filepath}")
+            # logger.debug(f"运行时参数已导出: {filepath}")
         except Exception as e:
             logger.error(f"导出运行时参数失败: {e}")

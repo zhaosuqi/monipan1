@@ -231,16 +231,18 @@ class BinanceExchange(BaseExchange):
             **kwargs: 其他参数
         """
         try:
+            close_position = kwargs.get('closePosition', False)
             params = {
                 'symbol': symbol,
                 'side': side,
                 'type': order_type,
-                'quantity': quantity,
             }
 
+            if quantity is not None and not close_position:
+                params['quantity'] = quantity
             if price:
                 params['price'] = price
-            if stop_price:
+            if stop_price is not None:
                 params['stopPrice'] = stop_price
             if client_order_id:
                 params['newClientOrderId'] = client_order_id
@@ -248,7 +250,11 @@ class BinanceExchange(BaseExchange):
             # 处理双向持仓模式(Hedge Mode)的positionSide参数
             if self.hedge_mode and 'positionSide' not in params and 'positionSide' not in kwargs:
                 # 只有当 params 中没有指定 positionSide 时才自动推断
-                is_reduce_only = params.get('reduceOnly', False) or kwargs.get('reduceOnly', False)
+                is_reduce_only = (
+                    params.get('reduceOnly', False)
+                    or kwargs.get('reduceOnly', False)
+                    or close_position
+                )
                 order_side = side.upper()
                 
                 if is_reduce_only:
@@ -273,19 +279,22 @@ class BinanceExchange(BaseExchange):
             # 币安对限价/止损限价单必须提供 timeInForce
             limit_types = {
                 'LIMIT', 'STOP', 'TAKE_PROFIT',
-                'STOP_MARKET', 'STOP_LIMIT', 'TAKE_PROFIT_LIMIT'
+                'STOP_LIMIT', 'TAKE_PROFIT_LIMIT'
             }
             if order_type.upper() in limit_types:
                 params.setdefault('timeInForce', 'GTC')
 
             # 添加其他参数
             params.update(kwargs)
+            if close_position:
+                params.pop('quantity', None)
+                params.pop('reduceOnly', None)
 
             # 记录API请求详情
             api_url = self.client.base_url
             self.logger.info(f"📤 [API请求] POST {api_url}/fapi/v1/order")
             self.logger.info(f"   下单参数: {symbol} {side} {order_type}")
-            self.logger.info(f"   数量={quantity} 价格={price}")
+            self.logger.info(f"   数量={quantity} 价格={price} 止损价={stop_price}")
             self.logger.debug(f"   完整参数: {params}")
 
             result = self.client.new_order(**params)
@@ -306,6 +315,7 @@ class BinanceExchange(BaseExchange):
                 filled_quantity=float(result.get('executedQty', 0)),
                 avg_price=float(result.get('avgPrice', 0)),
                 create_time=datetime.fromtimestamp(result['time'] / 1000) if result.get('time') else None,
+                stop_price=float(result.get('stopPrice', 0) or 0),
             )
 
             # 若订单已成交，拉取成交明细获取精确成交均价与手续费
@@ -361,7 +371,7 @@ class BinanceExchange(BaseExchange):
                 trace_id=kwargs.get('trace_id', ''),
                 side=local_side,
                 order_type=business_order_type,
-                price=order.price,
+                price=order.stop_price or order.price,
                 contracts=quantity,
                 status=local_status,
                 kline_close_time=kwargs.get('kline_close_time')
