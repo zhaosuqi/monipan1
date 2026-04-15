@@ -18,7 +18,10 @@
       "mcp__plugin_playwright_playwright__browser_take_screenshot",
       "mcp__plugin_playwright_playwright__browser_close",
       "Bash(ls:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(lsof:*)",
+      "Bash(true sleep 1 python3 -c \" import sys sys.path.insert\\(0, ''/Users/zhaosuqi/work/monipan1''\\) from dotenv import load_dotenv import os load_dotenv\\(''/Users/zhaosuqi/work/monipan1/.env''\\) # 检查环境变量 print\\(f''FEISHU_WEBHOOK from os.environ: {os.environ.get\\(\"\"FEISHU_WEBHOOK\"\", \"\"NOT SET\"\"\\)}''\\) from core.config import config print\\(f''FEISHU_WEBHOOK from config: {config.FEISHU_WEBHOOK}''\\) print\\(f''FEISHU_ENABLED from config: {config.FEISHU_ENABLED}''\\) import requests message = ''【验证码】您的登录验证码是：654321，有效期2分钟，请勿泄露给他人。'' print\\(f''\\\\nSending to: {config.FEISHU_WEBHOOK}''\\) resp = requests.post\\( config.FEISHU_WEBHOOK, json={''msg_type'': ''text'', ''content'': {''text'': message}}, timeout=5 \\) print\\(f''Status: {resp.status_code}''\\) print\\(f''Response: {resp.text}''\\) \")",
+      "Bash(git add:*)"
     ]
   }
 }
