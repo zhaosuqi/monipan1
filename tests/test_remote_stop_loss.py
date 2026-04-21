@@ -30,6 +30,37 @@ class FakeBinanceClient:
         self.base_url = 'https://testnet.binancefuture.com'
         self.last_params = None
 
+    def exchange_info(self):
+        return {
+            'symbols': [
+                {
+                    'symbol': 'BTCUSD_PERP',
+                    'pricePrecision': 1,
+                    'quantityPrecision': 0,
+                    'filters': [
+                        {
+                            'filterType': 'PRICE_FILTER',
+                            'minPrice': '2099',
+                            'maxPrice': '2868731.9',
+                            'tickSize': '0.1',
+                        },
+                        {
+                            'filterType': 'LOT_SIZE',
+                            'minQty': '1',
+                            'maxQty': '1000000',
+                            'stepSize': '1',
+                        },
+                        {
+                            'filterType': 'MARKET_LOT_SIZE',
+                            'minQty': '1',
+                            'maxQty': '30000',
+                            'stepSize': '1',
+                        },
+                    ],
+                }
+            ]
+        }
+
     def new_order(self, **params):
         self.last_params = params
         return {
@@ -164,7 +195,7 @@ def test_binance_stop_market_close_position_uses_expected_params():
     assert params['closePosition'] is True
     assert params['workingType'] == 'MARK_PRICE'
     assert params['positionSide'] == 'LONG'
-    assert params['stopPrice'] == 98.0
+    assert params['stopPrice'] == '98.0'
     assert 'quantity' not in params
     assert 'timeInForce' not in params
     assert 'reduceOnly' not in params
@@ -189,6 +220,28 @@ def test_binance_stop_market_sends_integral_contract_quantity_without_decimal():
 
     assert params['quantity'] == 37
     assert type(params['quantity']) is int
+
+
+def test_binance_stop_market_formats_quantity_and_stop_price_to_symbol_filters():
+    exchange = BinanceExchange(api_key='key', api_secret='secret', testnet=True)
+    exchange.client = FakeBinanceClient()
+    exchange.local_order_manager = FakeLocalOrderManager()
+
+    exchange.place_order(
+        symbol='BTCUSD_PERP',
+        side='BUY',
+        order_type='STOP_MARKET',
+        quantity=33.0,
+        stop_price=98.123456789,
+        business_order_type='SL',
+        reduceOnly=True,
+    )
+
+    params = exchange.client.last_params
+
+    assert params['quantity'] == 33
+    assert type(params['quantity']) is int
+    assert params['stopPrice'] == '98.1'
 
 
 def test_sync_positions_reconciles_filled_remote_stop_loss():

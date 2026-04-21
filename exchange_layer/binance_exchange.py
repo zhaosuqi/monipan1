@@ -5,6 +5,7 @@
 """
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
 from binance.error import ParameterRequiredError
@@ -46,12 +47,116 @@ class BinanceExchange(BaseExchange):
         # 飞书通知
         self.feishu_bot = FeishuBot()
 
+        # 交易对下单精度规则，来自 Binance exchangeInfo
+        self._symbol_rules: Dict[str, Dict[str, Any]] = {}
+
     @staticmethod
     def _normalize_quantity(quantity: float):
         """币本位合约张数精度为 0 时，避免把 37 张发送成 37.0。"""
         if isinstance(quantity, float) and quantity.is_integer():
             return int(quantity)
         return quantity
+
+    @staticmethod
+    def _positive_decimal(value: Any) -> Optional[Decimal]:
+        if value is None:
+            return None
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+        if decimal_value <= 0:
+            return None
+        return decimal_value
+
+    @staticmethod
+    def _format_decimal_step(
+        value: Any,
+        step: Optional[Decimal],
+        *,
+        rounding,
+        integer_when_possible: bool = False
+    ):
+        if step is None:
+            return BinanceExchange._normalize_quantity(value) if integer_when_possible else value
+
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return BinanceExchange._normalize_quantity(value) if integer_when_possible else value
+
+        units = (decimal_value / step).to_integral_value(rounding=rounding)
+        quantized = units * step
+        decimal_places = max(-step.normalize().as_tuple().exponent, 0)
+
+        if integer_when_possible and decimal_places == 0:
+            return int(quantized)
+
+        return f"{quantized:.{decimal_places}f}"
+
+    def _client_exchange_info(self) -> Dict[str, Any]:
+        if hasattr(self.client, 'exchange_info'):
+            return self.client.exchange_info()
+        if hasattr(self.client, 'futures_coin_exchange_info'):
+            return self.client.futures_coin_exchange_info()
+        raise AttributeError("客户端缺少 exchange_info/futures_coin_exchange_info 接口")
+
+    def _cache_symbol_rules(self, exchange_info: Dict[str, Any]) -> None:
+        for symbol_info in exchange_info.get('symbols', []):
+            symbol_name = symbol_info.get('symbol')
+            if not symbol_name:
+                continue
+
+            filters = {
+                item.get('filterType'): item
+                for item in symbol_info.get('filters', [])
+                if item.get('filterType')
+            }
+            price_filter = filters.get('PRICE_FILTER', {})
+            lot_filter = filters.get('LOT_SIZE', {})
+            market_lot_filter = filters.get('MARKET_LOT_SIZE', {})
+
+            self._symbol_rules[symbol_name] = {
+                'price_tick_size': self._positive_decimal(price_filter.get('tickSize')),
+                'lot_step_size': self._positive_decimal(lot_filter.get('stepSize')),
+                'market_lot_step_size': self._positive_decimal(market_lot_filter.get('stepSize')),
+                'price_precision': symbol_info.get('pricePrecision'),
+                'quantity_precision': symbol_info.get('quantityPrecision'),
+            }
+
+    def _get_symbol_rules(self, symbol: str) -> Dict[str, Any]:
+        if symbol in self._symbol_rules:
+            return self._symbol_rules[symbol]
+
+        try:
+            exchange_info = self._client_exchange_info()
+            self._cache_symbol_rules(exchange_info)
+        except Exception as e:
+            self.logger.warning(f"获取交易对精度规则失败，使用原始下单参数: {e}")
+
+        return self._symbol_rules.get(symbol, {})
+
+    def _format_order_quantity(self, symbol: str, order_type: str, quantity: Any):
+        rules = self._get_symbol_rules(symbol)
+        step = rules.get('lot_step_size')
+        if order_type.upper() in {'MARKET', 'STOP_MARKET'}:
+            step = rules.get('market_lot_step_size') or step
+
+        return self._format_decimal_step(
+            quantity,
+            step,
+            rounding=ROUND_DOWN,
+            integer_when_possible=True,
+        )
+
+    def _format_order_price(self, symbol: str, price: Any):
+        rules = self._get_symbol_rules(symbol)
+        return self._format_decimal_step(
+            price,
+            rules.get('price_tick_size'),
+            rounding=ROUND_HALF_UP,
+            integer_when_possible=False,
+        )
 
     def connect(self) -> bool:
         """连接到币安交易所"""
@@ -82,12 +187,8 @@ class BinanceExchange(BaseExchange):
                 self.logger.info("连接到币安%s（python-binance兼容模式）", "测试网" if self.testnet else "实盘")
 
             # 测试连接
-            if hasattr(self.client, 'exchange_info'):
-                self.client.exchange_info()
-            elif hasattr(self.client, 'futures_coin_exchange_info'):
-                self.client.futures_coin_exchange_info()
-            else:
-                raise AttributeError("客户端缺少 exchange_info/futures_coin_exchange_info 接口")
+            exchange_info = self._client_exchange_info()
+            self._cache_symbol_rules(exchange_info)
             
             # 获取持仓模式
             try:
@@ -246,11 +347,11 @@ class BinanceExchange(BaseExchange):
             }
 
             if quantity is not None and not close_position:
-                params['quantity'] = self._normalize_quantity(quantity)
+                params['quantity'] = self._format_order_quantity(symbol, order_type, quantity)
             if price:
-                params['price'] = price
+                params['price'] = self._format_order_price(symbol, price)
             if stop_price is not None:
-                params['stopPrice'] = stop_price
+                params['stopPrice'] = self._format_order_price(symbol, stop_price)
             if client_order_id:
                 params['newClientOrderId'] = client_order_id
 
