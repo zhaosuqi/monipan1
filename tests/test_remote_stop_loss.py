@@ -170,6 +170,27 @@ def test_binance_stop_market_close_position_uses_expected_params():
     assert 'reduceOnly' not in params
 
 
+def test_binance_stop_market_sends_integral_contract_quantity_without_decimal():
+    exchange = BinanceExchange(api_key='key', api_secret='secret', testnet=True)
+    exchange.client = FakeBinanceClient()
+    exchange.local_order_manager = FakeLocalOrderManager()
+
+    exchange.place_order(
+        symbol='BTCUSD_PERP',
+        side='BUY',
+        order_type='STOP_MARKET',
+        quantity=37.0,
+        stop_price=105.0,
+        business_order_type='SL',
+        reduceOnly=True,
+    )
+
+    params = exchange.client.last_params
+
+    assert params['quantity'] == 37
+    assert type(params['quantity']) is int
+
+
 def test_sync_positions_reconciles_filled_remote_stop_loss():
     engine = make_engine(FakeSyncExchange())
     pos = make_position()

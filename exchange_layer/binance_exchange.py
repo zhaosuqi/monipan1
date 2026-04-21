@@ -46,6 +46,13 @@ class BinanceExchange(BaseExchange):
         # 飞书通知
         self.feishu_bot = FeishuBot()
 
+    @staticmethod
+    def _normalize_quantity(quantity: float):
+        """币本位合约张数精度为 0 时，避免把 37 张发送成 37.0。"""
+        if isinstance(quantity, float) and quantity.is_integer():
+            return int(quantity)
+        return quantity
+
     def connect(self) -> bool:
         """连接到币安交易所"""
         try:
@@ -239,7 +246,7 @@ class BinanceExchange(BaseExchange):
             }
 
             if quantity is not None and not close_position:
-                params['quantity'] = quantity
+                params['quantity'] = self._normalize_quantity(quantity)
             if price:
                 params['price'] = price
             if stop_price is not None:
