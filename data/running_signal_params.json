@@ -133,8 +133,8 @@
   "maker_fee_rate": 0.0002,
   "taker_fee_rate": 0.0006,
   "fee_rate": 0.0004,
-  "open_taker_or_maker": "TAKER",
+  "open_taker_or_maker": "MAKER",
   "open_maker_price_ratio": 0.0,
-  "open_maker_duration_minutes": 3,
+  "open_maker_duration_minutes": 5,
   "_exported_at": "2026-03-04 21:53:33"
 }

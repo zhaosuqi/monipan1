@@ -114,6 +114,94 @@ class SignalCalculator:
 
         self.logger.info("信号计算器初始化完成,已配置时间窗口移动平均值")
 
+    @staticmethod
+    def _json_safe(value: Any):
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if hasattr(value, 'item'):
+            try:
+                return value.item()
+            except Exception:
+                return str(value)
+        if isinstance(value, dict):
+            return {str(k): SignalCalculator._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [SignalCalculator._json_safe(item) for item in value]
+        return value
+
+    @staticmethod
+    def _format_audit_json(payload: Dict[str, Any]) -> str:
+        return json.dumps(
+            SignalCalculator._json_safe(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    def _build_signal_context(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        indicator_keys = [
+            'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
+            'macd15m', 'dif15m', 'dea15m', 'j_15',
+            'macd1h', 'dif1h', 'dea1h', 'j_1h',
+            'macd4h', 'dif4h', 'dea4h', 'j_4h',
+            'macd1d', 'dif1d', 'dea1d',
+            'hist15_mean', 'dif15_mean', 'dea15_mean',
+            'hist15_mean_2', 'dif15_mean_2', 'dea15_mean_2',
+            'hist1h_mean', 'dif1h_mean', 'dea1h_mean',
+            'hist1h_mean_2', 'dif1h_mean_2', 'dea1h_mean_2',
+            'hist4_mean', 'dif4_mean', 'dea4_mean',
+            'hist4_mean_2', 'dif4_mean_2', 'dea4_mean_2',
+            'hist1d_mean', 'dif1d_mean', 'dea1d_mean',
+            'hist1d_mean_2', 'dif1d_mean_2', 'dea1d_mean_2',
+            'vol_ma5', 'vol_ma10',
+        ]
+        return {
+            key: row.get(key)
+            for key in indicator_keys
+            if key in row
+        }
+
+    def _log_signal_rejected(
+        self,
+        row: Dict[str, Any],
+        long_reason: str,
+        short_reason: str,
+    ) -> None:
+        payload = {
+            'event': 'open_signal_rejected',
+            'open_time': row.get('open_time'),
+            'close_time': row.get('close_time'),
+            'close': row.get('close'),
+            'long_reject_reason': long_reason or '多头条件未通过，未返回具体原因',
+            'short_reject_reason': short_reason or '空头条件未通过，未返回具体原因',
+            'indicators': self._build_signal_context(row),
+        }
+        self.logger.info(f"📋 [信号未通过] {self._format_audit_json(payload)}")
+
+    def _log_signal_passed(
+        self,
+        row: Dict[str, Any],
+        side: str,
+        reason: str,
+        opposite_reject_reason: str = '',
+    ) -> None:
+        payload = {
+            'event': 'open_signal_passed',
+            'side': side,
+            'reason': reason,
+            'opposite_reject_reason': opposite_reject_reason,
+            'open_time': row.get('open_time'),
+            'close_time': row.get('close_time'),
+            'trigger_close_price': row.get('close'),
+            'indicators': self._build_signal_context(row),
+            'runtime_params': self.get_signal_params(),
+        }
+        self.logger.info("=" * 80)
+        self.logger.info(f"📋 [信号通过参数快照] {self._format_audit_json(payload)}")
+        self.logger.info("=" * 80)
+
     def calculate_open_signal(self, indicators: Dict[str, Any], row_prev=None, row_list=None, state_prices=None) -> Optional[Signal]:
         """
         计算开仓信号 - 基于MACD V5.0算法
@@ -257,6 +345,7 @@ class SignalCalculator:
 
         if long_signal:
             self.debug_count += 1
+            self._log_signal_passed(row, 'long', long_reason)
             # 🔍 调试：记录返回的 Signal 对象
             ts_str = str(row.get('open_time', ''))
             if '19:44' in ts_str or '19:39' in ts_str:
@@ -289,6 +378,7 @@ class SignalCalculator:
     
         if short_signal:
             self.debug_count += 1
+            self._log_signal_passed(row, 'short', short_reason, opposite_reject_reason=long_reason)
             # 🔍 调试：记录返回的 Signal 对象
             ts_str = str(row.get('open_time', ''))
             if '19:44' in ts_str or '19:39' in ts_str:
@@ -311,6 +401,8 @@ class SignalCalculator:
             self.logger.info(f"🔍 [signal_calculator] 返回 None - 无信号")
             self.logger.info(f"🔍 [signal_calculator] 时间={ts_str}")
             self.logger.info(f"🔍 [signal_calculator] long_signal={long_signal}, short_signal={short_signal}")
+
+        self._log_signal_rejected(row, long_reason, short_reason)
 
         return None
 

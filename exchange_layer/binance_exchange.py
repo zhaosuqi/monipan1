@@ -392,8 +392,13 @@ class BinanceExchange(BaseExchange):
             if order_type.upper() in limit_types:
                 params.setdefault('timeInForce', 'GTC')
 
-            # 添加其他参数
-            params.update(kwargs)
+            # 只把交易所支持的参数发到 Binance；trace_id 等本地元数据仅用于本地订单记录
+            api_kwarg_names = {
+                'timeInForce', 'reduceOnly', 'closePosition', 'workingType',
+                'priceProtect', 'positionSide', 'newOrderRespType', 'recvWindow',
+                'activationPrice', 'callbackRate', 'selfTradePreventionMode',
+            }
+            params.update({key: value for key, value in kwargs.items() if key in api_kwarg_names})
             if close_position:
                 params.pop('quantity', None)
                 params.pop('reduceOnly', None)

@@ -779,14 +779,18 @@ class TradeEngine:
             return False
 
         # 解析开仓模式：MAKER=限价挂单，TAKER=市价吃单
-        # open_mode = str(getattr(config, 'OPEN_TAKER_OR_MAKER', 'TAKER') or 'TAKER').strip().upper()
-        # if open_mode not in ('MAKER', 'TAKER'):
-            # self.logger.warning(f"OPEN_TAKER_OR_MAKER 配置非法: {open_mode}，回退为 TAKER")
-        # open_mode = 'TAKER'
-        # is_maker_open = open_mode == 'TAKER'
+        open_mode = str(getattr(config, 'OPEN_TAKER_OR_MAKER', 'MAKER') or 'MAKER').strip().upper()
+        if open_mode not in ('MAKER', 'TAKER'):
+            self.logger.warning(f"OPEN_TAKER_OR_MAKER 配置非法: {open_mode}，回退为 MAKER")
+            open_mode = 'MAKER'
+        is_maker_open = open_mode == 'MAKER'
 
         # 预估手续费并锁定对应资金
-        open_fee_rate = 0.00065
+        open_fee_rate = (
+            float(getattr(config, 'MAKER_FEE_RATE', 0.0002))
+            if is_maker_open
+            else float(getattr(config, 'TAKER_FEE_RATE', 0.0006))
+        )
 
         required_margin_btc = (max_contracts * cn) / (price * leverage)
         estimated_fee_btc = (max_contracts * cn * open_fee_rate) / price
@@ -804,7 +808,7 @@ class TradeEngine:
         # 🚀 新增: 通过Exchange接口下单
         # ============================================================
         exchange_side = 'BUY' if side == 'long' else 'SELL'
-        open_mode_desc = '限价挂单(MAKER)' 
+        open_mode_desc = '限价挂单(MAKER)' if is_maker_open else '市价吃单(TAKER)'
 
         self.logger.info(
             f"📡 [下单到交易所] {exchange_side} | "
@@ -817,7 +821,7 @@ class TradeEngine:
             filled_contracts = max_contracts
 
             # 按配置选择 MAKER/LIMIT 或 TAKER/MARKET 开仓
-            order_type = 'MARKET'
+            order_type = 'LIMIT' if is_maker_open else 'MARKET'
             order_params = {
                 'symbol': config.SYMBOL,
                 'side': exchange_side,
@@ -828,9 +832,9 @@ class TradeEngine:
                 'trace_id': trace_id,  # 传递 trace_id
                 'kline_close_time': str(row.get('close_time', '')),  # K线收盘时间
             }
-            # if is_maker_open:
-            #     order_params['price'] = float(price)
-            #     order_params['timeInForce'] = 'GTC'
+            if is_maker_open:
+                order_params['price'] = float(price)
+                order_params['timeInForce'] = 'GTC'
 
             order = self.exchange.place_order(**order_params)
 
@@ -845,19 +849,19 @@ class TradeEngine:
             )
 
             # 仅 MAKER 模式发送挂单通知（TAKER 市价单会直接走成交通知）
-            # if is_maker_open:
-            #     try:
-            #         self.feishu_bot.send_open_order_placed_notification(
-            #             symbol=config.SYMBOL,
-            #             side=side,
-            #             price=price,
-            #             contracts=max_contracts,
-            #             signal_name=signal_name,
-            #             order_id=str(order.order_id),
-            #             ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
-            #         )
-            #     except Exception as e:
-            #         self.logger.warning(f"飞书开仓挂单通知发送失败: {e}")
+            if is_maker_open:
+                try:
+                    self.feishu_bot.send_open_order_placed_notification(
+                        symbol=config.SYMBOL,
+                        side=side,
+                        price=price,
+                        contracts=max_contracts,
+                        signal_name=signal_name,
+                        order_id=str(order.order_id),
+                        ts=ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts
+                    )
+                except Exception as e:
+                    self.logger.warning(f"飞书开仓挂单通知发送失败: {e}")
 
             # 检测订单状态
             if order.status.value == 'FILLED':
@@ -881,16 +885,13 @@ class TradeEngine:
                 return False  # 不创建持仓
 
             elif order.status.value in ['NEW', 'PARTIALLY_FILLED']:
-                # 交易所（尤其测试网）市价单也可能先返回 NEW，统一做短轮询确认最终状态
-                poll_timeout = int(
-                    getattr(
-                        config,
-                        'OPEN_MARKET_TIMEOUT_SECONDS',
-                        10
-                    )
-                )
+                # MAKER 开仓按配置分钟数等待成交；等待期间主交易循环不会进入下一次开仓信号判定
+                if is_maker_open:
+                    poll_timeout = int(max(1, getattr(config, 'OPEN_MAKER_DURATION_MINUTES', 5)) * 60)
+                else:
+                    poll_timeout = int(getattr(config, 'OPEN_MARKET_TIMEOUT_SECONDS', 10))
                 poll_interval = 0.5
-                mode_cn =  "市价单"
+                mode_cn = "限价挂单" if is_maker_open else "市价单"
                 self.logger.info(
                     f"⏳ [订单待成交] {mode_cn} {order.order_id} 状态为{order.status.value}，"
                     f"开始轮询等待成交..."

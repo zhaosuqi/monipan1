@@ -267,9 +267,9 @@ class Config:
         self.POSITION_NOMINAL = float(os.getenv('POSITION_NOMINAL', '10000.0'))
 
         # 订单类型
-        self.OPEN_TAKER_OR_MAKER = os.getenv('OPEN_TAKER_OR_MAKER', 'TAKER')
+        self.OPEN_TAKER_OR_MAKER = os.getenv('OPEN_TAKER_OR_MAKER', 'MAKER')
         self.OPEN_MAKER_PRICE_RATIO = float(os.getenv('OPEN_MAKER_PRICE_RATIO', '0.0'))
-        self.OPEN_MAKER_DURATION_MINUTES = int(os.getenv('OPEN_MAKER_DURATION_MINUTES', '3'))
+        self.OPEN_MAKER_DURATION_MINUTES = int(os.getenv('OPEN_MAKER_DURATION_MINUTES', '5'))
 
         # 手续费率
         self.MAKER_FEE_RATE = float(os.getenv('MAKER_FEE_RATE', '0.0002'))
