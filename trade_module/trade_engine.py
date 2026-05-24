@@ -90,6 +90,9 @@ class Trade:
     trace_id: str
 
 
+TRADE_HISTORY_REPORT_COUNT = 10
+
+
 class TradeEngine:
     """交易引擎 - 处理开仓、平仓、止盈、止损等核心逻辑"""
 
@@ -171,7 +174,7 @@ class TradeEngine:
 
         # 交易历史报告定时发送
         self.trade_history_report_interval = getattr(config, 'TRADE_HISTORY_REPORT_INTERVAL', 0)
-        self.trade_history_report_count = getattr(config, 'TRADE_HISTORY_REPORT_COUNT', 10)
+        self.trade_history_report_count = TRADE_HISTORY_REPORT_COUNT
         self.last_trade_history_report: Optional[pd.Timestamp] = None
         self._trade_report_stop_event = threading.Event()
         self._trade_report_thread = None
@@ -466,147 +469,109 @@ class TradeEngine:
         """发送交易历史报告到飞书"""
         self.logger.info("=" * 60)
         self.logger.info("📊 [交易历史报告] 开始生成...")
-        self.logger.info(f"   内存中交易记录数: {len(self.trades)}")
-        self.logger.info(f"   报告显示条数配置: {self.trade_history_report_count}")
+        self.logger.info(f"   报告固定显示最近 {TRADE_HISTORY_REPORT_COUNT} 笔交易")
         
         trade_list = []
-        
-        # 优先使用内存中的交易记录
-        if False:
-            self.logger.info("   使用内存中的交易记录")
-            # 获取最近N笔交易
-            report_count = self.trade_history_report_count
-            recent_trades = self.trades[-report_count:] if len(self.trades) > report_count else self.trades
 
-            # 转换为飞书报告需要的格式
-            for trade in recent_trades:
-                # 计算手续费（从 gross_pnl 和 net_pnl 推算）
-                gross_pnl_btc = trade.gross_pnl / trade.exit_price if trade.exit_price else 0
-                net_pnl_btc = trade.net_pnl / trade.exit_price if trade.exit_price else 0
-                fee_btc = gross_pnl_btc - net_pnl_btc
+        self.logger.info("   从交易所 API 实时获取历史成交...")
+        try:
+            trades_from_api = self.exchange.get_user_trades(
+                config.SYMBOL, limit=100, raise_on_error=True
+            )
+            self.logger.info(
+                f"   交易所返回成交记录数: "
+                f"{len(trades_from_api) if trades_from_api else 0}"
+            )
 
-                trade_list.append({
-                    'exit_time': trade.exit_time,
-                    'side': trade.side,
-                    'entry_price': trade.entry_price,
-                    'exit_price': trade.exit_price,
-                    'net_pnl_btc': net_pnl_btc,
-                    'fee_btc': fee_btc
-                })
-        else:
-            # 内存中没有交易记录，尝试从交易所 API 获取
-            self.logger.info("   内存中无交易记录，从交易所获取历史成交...")
-            try:
-                # 获取更多记录以便配对开仓和平仓
-                trades_from_api = self.exchange.get_user_trades(
-                    config.SYMBOL, limit=200
-                )
-                self.logger.info(
-                    f"   交易所返回成交记录数: "
-                    f"{len(trades_from_api) if trades_from_api else 0}"
-                )
-                
-                if trades_from_api:
-                    from collections import defaultdict
+            if trades_from_api:
+                from collections import defaultdict
 
-                    # 按订单ID分组
-                    grouped = defaultdict(list)
-                    for t in trades_from_api:
-                        grouped[t.get('orderId')].append(t)
-                    
-                    # 汇总每个订单的信息
-                    order_summaries = []
-                    for order_id, order_trades in grouped.items():
-                        total_pnl = sum(
-                            float(t.get('realizedPnl', 0) or 0)
-                            for t in order_trades
-                        )
-                        total_fee = sum(
-                            float(t.get('commission', 0) or 0)
-                            for t in order_trades
-                        )
-                        total_qty = sum(
-                            float(t.get('qty', 0) or 0)
-                            for t in order_trades
-                        )
-                        first_trade = order_trades[0]
-                        trade_side = first_trade.get('side')  # BUY or SELL
-                        avg_price = float(first_trade.get('price', 0) or 0)
-                        trade_time = first_trade.get('time', 0)
-                        
-                        order_summaries.append({
-                            'order_id': order_id,
-                            'time': trade_time,
-                            'trade_side': trade_side,
-                            'price': avg_price,
-                            'qty': total_qty,
-                            'pnl': total_pnl,
-                            'fee': total_fee,
-                            'is_close': abs(total_pnl) > 0
-                        })
-                    
-                    # 按时间排序（早到晚）
-                    order_summaries.sort(key=lambda x: x['time'])
-                    
-                    # 分离开仓和平仓订单
-                    # 开仓: BUY开多(pnl=0), SELL开空(pnl=0)
-                    # 平仓: SELL平多(pnl!=0), BUY平空(pnl!=0)
-                    long_opens = []   # BUY且pnl=0 -> 开多
-                    short_opens = []  # SELL且pnl=0 -> 开空
-                    
-                    close_orders = []
-                    
-                    for order in order_summaries:
-                        if not order['is_close']:
-                            # 开仓订单
-                            if order['trade_side'] == 'BUY':
-                                long_opens.append(order)
-                            else:
-                                short_opens.append(order)
+                grouped = defaultdict(list)
+                for t in trades_from_api:
+                    grouped[t.get('orderId')].append(t)
+
+                order_summaries = []
+                for order_id, order_trades in grouped.items():
+                    total_pnl = sum(
+                        float(t.get('realizedPnl', 0) or 0)
+                        for t in order_trades
+                    )
+                    total_fee = sum(
+                        float(t.get('commission', 0) or 0)
+                        for t in order_trades
+                    )
+                    total_qty = sum(
+                        float(t.get('qty', 0) or 0)
+                        for t in order_trades
+                    )
+                    total_notional = sum(
+                        float(t.get('price', 0) or 0) * float(t.get('qty', 0) or 0)
+                        for t in order_trades
+                    )
+                    first_trade = order_trades[0]
+                    trade_side = first_trade.get('side')  # BUY or SELL
+                    avg_price = total_notional / total_qty if total_qty else 0
+                    trade_time = max(t.get('time', 0) or 0 for t in order_trades)
+
+                    order_summaries.append({
+                        'order_id': order_id,
+                        'time': trade_time,
+                        'trade_side': trade_side,
+                        'price': avg_price,
+                        'qty': total_qty,
+                        'pnl': total_pnl,
+                        'fee': total_fee,
+                        'is_close': abs(total_pnl) > 0
+                    })
+
+                order_summaries.sort(key=lambda x: x['time'])
+                long_opens = []
+                short_opens = []
+                close_orders = []
+
+                for order in order_summaries:
+                    if not order['is_close']:
+                        if order['trade_side'] == 'BUY':
+                            long_opens.append(order)
                         else:
-                            # 平仓订单
-                            # SELL平多，找最近的开多订单
-                            # BUY平空，找最近的开空订单
-                            if order['trade_side'] == 'SELL':
-                                position_side = 'long'
-                                opens_list = long_opens
-                            else:
-                                position_side = 'short'
-                                opens_list = short_opens
-                            
-                            # 找该平仓之前最近的开仓
-                            entry_price = 0
-                            for i in range(len(opens_list) - 1, -1, -1):
-                                if opens_list[i]['time'] < order['time']:
-                                    entry_price = opens_list[i]['price']
-                                    opens_list.pop(i)  # 配对后移除
-                                    break
-                            
-                            exit_time = pd.to_datetime(
-                                order['time'], unit='ms'
-                            ) if order['time'] else None
-                            
-                            close_orders.append({
-                                'exit_time': exit_time,
-                                'side': position_side,
-                                'entry_price': entry_price,
-                                'exit_price': order['price'],
-                                'net_pnl_btc': order['pnl'],
-                                'fee_btc': order['fee']
-                            })
-                    
-                    self.logger.info(f"   筛选出平仓订单数: {len(close_orders)}")
-                    
-                    # 按时间排序，取最近N笔
-                    close_orders.sort(key=lambda x: x['exit_time'] or pd.Timestamp.min, reverse=True)
-                    trade_list = close_orders[:self.trade_history_report_count]
-                    trade_list.reverse()  # 时间正序
-                    
-                    self.logger.info(f"   最终报告交易数: {len(trade_list)}")
-                else:
-                    self.logger.info("   交易所返回空记录")
-            except Exception as e:
-                self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
+                            short_opens.append(order)
+                    else:
+                        if order['trade_side'] == 'SELL':
+                            position_side = 'long'
+                            opens_list = long_opens
+                        else:
+                            position_side = 'short'
+                            opens_list = short_opens
+
+                        entry_price = 0
+                        for i in range(len(opens_list) - 1, -1, -1):
+                            if opens_list[i]['time'] < order['time']:
+                                entry_price = opens_list[i]['price']
+                                opens_list.pop(i)
+                                break
+
+                        exit_time = pd.to_datetime(
+                            order['time'], unit='ms'
+                        ) if order['time'] else None
+
+                        close_orders.append({
+                            'exit_time': exit_time,
+                            'side': position_side,
+                            'entry_price': entry_price,
+                            'exit_price': order['price'],
+                            'net_pnl_btc': order['pnl'],
+                            'fee_btc': order['fee']
+                        })
+
+                self.logger.info(f"   筛选出平仓订单数: {len(close_orders)}")
+                close_orders.sort(key=lambda x: x['exit_time'] or pd.Timestamp.min, reverse=True)
+                trade_list = close_orders[:TRADE_HISTORY_REPORT_COUNT]
+                trade_list.reverse()
+                self.logger.info(f"   最终报告交易数: {len(trade_list)}")
+            else:
+                self.logger.info("   交易所返回空记录")
+        except Exception as e:
+            self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
         
         if not trade_list:
             self.logger.info("   暂无交易记录，跳过报告发送")
@@ -637,7 +602,7 @@ class TradeEngine:
             f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, "
             f"WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}"
         )
-        
+
         # 从交易所API获取真实账户余额
         try:
             account_info = self.exchange.get_account_info(self.display_asset)
@@ -646,7 +611,7 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"   获取交易所余额失败，使用本地记录: {e}")
             total_balance_eth = 1
-        
+
         try:
             result = self.feishu_bot.send_trade_history_report(
                 trades=trade_list,
@@ -658,11 +623,6 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"发送交易历史报告失败: {e}", exc_info=True)
             self.logger.info("=" * 60)
-
-
-        # 新策略：不预先挂止盈单，改为实时监测后再挂单
-        # if config.TP_LEVELS:
-        #     self._place_initial_tp_order(pos, ts)
 
     def open_position(self, ts, price: float, row: Dict,
                       side: str, signal_name: str) -> bool:
@@ -718,10 +678,8 @@ class TradeEngine:
                     )
                     return False
 
-
         # 计算可用资金（扣除已锁定部分）
         leverage = max(1.0, float(getattr(config, 'LEVERAGE', 1)))
-      
         available_capital = max(0.0, self.realized_pnl - self.locked_capital)
         # 使用缓存的账户总余额（由定时同步更新）
         total_balance = self.cached_total_balance
