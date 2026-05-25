@@ -428,73 +428,85 @@ class SignalCalculator:
         reasons = []
         history_rows = row_list or []
 
-        # ========== 价格变化验证 (参考 macd_refactor.py) ==========
-        # M_PRICE_CHANGE - 防止跳空开仓
-        if config.M_PRICE_CHANGE != 0 and config.M_PRICE_CHANGE_MINUTES > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES]
-            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else r['close'] * config.M_PRICE_CHANGE
-            if abs(row['close'] - r['close']) > price_change_limit:
-                is_long = False
-                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
-        if is_long and config.M_PRICE_CHANGE_B != 0 and config.M_PRICE_CHANGE_MINUTES_B > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_B:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_B]
-            price_change_limit = config.M_PRICE_CHANGE_B if config.M_PRICE_CHANGE_B > 1 else r['close'] * config.M_PRICE_CHANGE_B
-            if abs(row['close'] - r['close']) > price_change_limit:
-                is_long = False
-                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
-        if is_long and config.M_PRICE_CHANGE_C != 0 and config.M_PRICE_CHANGE_MINUTES_C > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_C:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_C]
-            price_change_limit = config.M_PRICE_CHANGE_C if config.M_PRICE_CHANGE_C > 1 else r['close'] * config.M_PRICE_CHANGE_C
-            if abs(row['close'] - r['close']) > price_change_limit:
-                is_long = False
-                reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={r['close']:.2f}, diff={abs(row['close']-r['close']):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={r['close']}, diff={abs(row['close']-r['close'])}")
-        # if row_prev is not None and config.M_PRICE_CHANGE != 0:
-        #     price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
-        #     if abs(row['close'] - row_prev['close']) > price_change_limit:
-        #         is_long = False
-        #         reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
-        #         logger.debug(f"DEBUG: 跳过多头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
+        def _pass_multi_m_price_change(side_text: str) -> bool:
+            checks = [
+                ("A", getattr(config, "M_PRICE_CHANGE", 0), getattr(config, "M_PRICE_CHANGE_MINUTES", 0)),
+                ("B", getattr(config, "M_PRICE_CHANGE_B", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_B", 0)),
+                ("C", getattr(config, "M_PRICE_CHANGE_C", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_C", 0)),
+                ("D", getattr(config, "M_PRICE_CHANGE_D", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_D", 0)),
+                ("E", getattr(config, "M_PRICE_CHANGE_E", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_E", 0)),
+            ]
+            for group_name, raw_limit, raw_minutes in checks:
+                try:
+                    limit = float(raw_limit)
+                except Exception:
+                    limit = 0.0
+                try:
+                    minutes_back = int(raw_minutes)
+                except Exception:
+                    minutes_back = 0
+                if limit <= 0 or minutes_back <= 0 or len(history_rows) < minutes_back:
+                    continue
+                r = history_rows[-1 * minutes_back:]
+                r_high_max = max(item['high'] for item in r)
+                r_low_min = min(item['low'] for item in r)
+                r_range = r_high_max - r_low_min
+                price_change_limit = limit if limit > 1 else row['close'] * limit
+                if r_range > price_change_limit:
+                    logger.debug(
+                        "DEBUG: 跳过%s开仓 due to price range at %s, group=%s, high_max=%s, low_min=%s, range=%s, limit=%s, minutes_back=%s",
+                        side_text,
+                        row.get('close_time'),
+                        group_name,
+                        r_high_max,
+                        r_low_min,
+                        r_range,
+                        price_change_limit,
+                        minutes_back,
+                    )
+                    return False
+            return True
 
-        # PRICE_CHANGE_COUNT
-        if state_prices is not None and config.PRICE_CHANGE_COUNT > 0:
-            max_price = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT:].max()
-            min_price = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT:].min()
-            if max_price > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT and min_price < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT:
-                is_long = False
-                reasons.append(f"价格变化限制_COUNT: min={min_price:.2f}, max={max_price:.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price change limit at {row.get('close_time')}, min_price={min_price}, max_price={max_price}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT}")
-
-        # PRICE_CHANGE_COUNT_B
-        if state_prices is not None and config.PRICE_CHANGE_COUNT_B > 0:
-            max_price_b = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_B:].max()
-            min_price_b = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_B:].min()
-            if max_price_b > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT_B and min_price_b < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT_B:
-                is_long = False
-                reasons.append(f"价格变化限制_COUNT_B: min={min_price_b:.2f}, max={max_price_b:.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price change limit at {row.get('close_time')}, min_price_b={min_price_b}, max_price_b={max_price_b}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT_B}")
-
-        # PRICE_CHANGE_COUNT_C
-        if state_prices is not None and config.PRICE_CHANGE_COUNT_C > 0:
-            max_price_c = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_C:].max()
-            min_price_c = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_C:].min()
-            if max_price_c > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT_C and min_price_c < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT_C:
-                is_long = False
-                reasons.append(f"价格变化限制_COUNT_C: min={min_price_c:.2f}, max={max_price_c:.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to price change limit at {row.get('close_time')}, min_price_c={min_price_c}, max_price_c={max_price_c}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT_C}")
-
-        # ENABLE_MA5_MA10 - 成交量检查 (多头要求 vol_ma5 > vol_ma10)
-        if config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
-            if row.get('vol_ma5') < row.get('vol_ma10'):
-                is_long = False
-                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
-
-        # 如果价格验证失败，直接返回
-        if not is_long:
-            return False, "; ".join(reasons)
+        def _pass_multi_price_change_window(side_text: str) -> bool:
+            checks = [
+                ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
+                ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
+                ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
+                ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
+                ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+            ]
+            for group_name, raw_count, raw_limit in checks:
+                try:
+                    count = int(raw_count)
+                except Exception:
+                    count = 0
+                try:
+                    limit = float(raw_limit)
+                except Exception:
+                    limit = 0.0
+                if state_prices is None or count <= 0 or limit <= 0:
+                    continue
+                price_slice = state_prices.iloc[-1 * count:]
+                if price_slice.empty:
+                    continue
+                max_price = price_slice.max()
+                min_price = price_slice.min()
+                upper = row['close'] + row['close'] * limit
+                lower = row['close'] - row['close'] * limit
+                if max_price > upper and min_price < lower:
+                    logger.debug(
+                        "DEBUG: 跳过%s开仓 due to price change limit at %s, group=%s, min_price=%s, max_price=%s, close=%s, limit=%s, count=%s",
+                        side_text,
+                        row.get('close_time'),
+                        group_name,
+                        min_price,
+                        max_price,
+                        row['close'],
+                        limit,
+                        count,
+                    )
+                    return False
+            return True
 
         # 📊 调试：记录特定时刻的检查开始
         debug_mode = True
@@ -532,7 +544,8 @@ class SignalCalculator:
         # DIF15均值检查 (第一组)
         if is_long and config.MEANS_DIF15_COUNT != 0:
             dif15_mean = row.get('dif15_mean', 0)
-            if dif15 - config.DIF15_MEANS_LIMIT < dif15_mean:
+            dif15_mean_2_for_first = row.get('dif15_mean_2', 0)
+            if dif15 - config.DIF15_MEANS_LIMIT < dif15_mean or dif15 - config.DIF15_MEANS_LIMIT_2 < dif15_mean_2_for_first:
                 is_long = False
                 reasons.append(f"DIF15均值1: {dif15:.2f} - {config.DIF15_MEANS_LIMIT:.2f} < {dif15_mean:.2f}")
 
@@ -753,6 +766,20 @@ class SignalCalculator:
         elif debug_mode and is_long:
             logger.info(f"✅ [{ts_str}] J4H检查: {j_4h:.2f} <= {config.T0_J4H_LIMIT}")
 
+        if is_long and not _pass_multi_m_price_change("多头"):
+            is_long = False
+            reasons.append("价格跳空过滤未通过")
+
+        if is_long and not _pass_multi_price_change_window("多头"):
+            is_long = False
+            reasons.append("价格变化窗口过滤未通过")
+
+        if is_long and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
+            if row.get('vol_ma5') < row.get('vol_ma10'):
+                is_long = False
+                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
+                logger.debug(f"DEBUG: 跳过多头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
+
         # 通过所有检查
         if is_long:
             reason = f"多头开仓信号 H15={hist15:.2f} H1H={hist1h:.2f} H4={hist4:.2f}"
@@ -794,84 +821,85 @@ class SignalCalculator:
             self.logger.info(row_prev)
             self.logger.info("=" * 80)
 
-        # ========== 价格变化验证 (参考 macd_refactor.py) ==========
-        if config.M_PRICE_CHANGE != 0 and config.M_PRICE_CHANGE_MINUTES > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES:]
-            r_high_max = max(item['high'] for item in r)
-            r_low_min = min(item['low'] for item in r)
-            r_range = r_high_max - r_low_min
-            price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row['close'] * config.M_PRICE_CHANGE
-            if r_range > price_change_limit:
-                is_short = False
-                reasons.append(f"价格跳空: high_max={r_high_max:.2f}, low_min={r_low_min:.2f}, range={r_range:.2f}, limit={price_change_limit:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price range at {row.get('close_time')}, high_max={r_high_max}, low_min={r_low_min}, range={r_range}")
-        if is_short and config.M_PRICE_CHANGE_B != 0 and config.M_PRICE_CHANGE_MINUTES_B > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_B:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_B:]
-            r_high_max = max(item['high'] for item in r)
-            r_low_min = min(item['low'] for item in r)
-            r_range = r_high_max - r_low_min
-            price_change_limit = config.M_PRICE_CHANGE_B if config.M_PRICE_CHANGE_B > 1 else row['close'] * config.M_PRICE_CHANGE_B
-            if r_range > price_change_limit:
-                is_short = False
-                reasons.append(f"价格跳空: high_max={r_high_max:.2f}, low_min={r_low_min:.2f}, range={r_range:.2f}, limit={price_change_limit:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price range at {row.get('close_time')}, high_max={r_high_max}, low_min={r_low_min}, range={r_range}")
+        def _pass_multi_m_price_change(side_text: str) -> bool:
+            checks = [
+                ("A", getattr(config, "M_PRICE_CHANGE", 0), getattr(config, "M_PRICE_CHANGE_MINUTES", 0)),
+                ("B", getattr(config, "M_PRICE_CHANGE_B", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_B", 0)),
+                ("C", getattr(config, "M_PRICE_CHANGE_C", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_C", 0)),
+                ("D", getattr(config, "M_PRICE_CHANGE_D", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_D", 0)),
+                ("E", getattr(config, "M_PRICE_CHANGE_E", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_E", 0)),
+            ]
+            for group_name, raw_limit, raw_minutes in checks:
+                try:
+                    limit = float(raw_limit)
+                except Exception:
+                    limit = 0.0
+                try:
+                    minutes_back = int(raw_minutes)
+                except Exception:
+                    minutes_back = 0
+                if limit <= 0 or minutes_back <= 0 or len(history_rows) < minutes_back:
+                    continue
+                r = history_rows[-1 * minutes_back:]
+                r_high_max = max(item['high'] for item in r)
+                r_low_min = min(item['low'] for item in r)
+                r_range = r_high_max - r_low_min
+                price_change_limit = limit if limit > 1 else row['close'] * limit
+                if r_range > price_change_limit:
+                    logger.debug(
+                        "DEBUG: 跳过%s开仓 due to price range at %s, group=%s, high_max=%s, low_min=%s, range=%s, limit=%s, minutes_back=%s",
+                        side_text,
+                        row.get('close_time'),
+                        group_name,
+                        r_high_max,
+                        r_low_min,
+                        r_range,
+                        price_change_limit,
+                        minutes_back,
+                    )
+                    return False
+            return True
 
-        if is_short and config.M_PRICE_CHANGE_C != 0 and config.M_PRICE_CHANGE_MINUTES_C > 0 and len(history_rows) >= config.M_PRICE_CHANGE_MINUTES_C:
-            r = history_rows[-1 * config.M_PRICE_CHANGE_MINUTES_C:]
-            r_high_max = max(item['high'] for item in r)
-            r_low_min = min(item['low'] for item in r)
-            r_range = r_high_max - r_low_min
-            price_change_limit = config.M_PRICE_CHANGE_C if config.M_PRICE_CHANGE_C > 1 else row['close'] * config.M_PRICE_CHANGE_C
-            if r_range > price_change_limit:
-                is_short = False
-                reasons.append(f"价格跳空: high_max={r_high_max:.2f}, low_min={r_low_min:.2f}, range={r_range:.2f}, limit={price_change_limit:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price range at {row.get('close_time')}, high_max={r_high_max}, low_min={r_low_min}, range={r_range}")
-
-        # M_PRICE_CHANGE - 防止跳空开仓
-        # if row_prev is not None and config.M_PRICE_CHANGE != 0:
-        #     price_change_limit = config.M_PRICE_CHANGE if config.M_PRICE_CHANGE > 1 else row_prev['close'] * config.M_PRICE_CHANGE
-        #     if abs(row['close'] - row_prev['close']) > price_change_limit:
-        #         is_short = False
-        #         reasons.append(f"价格跳空: close={row['close']:.2f}, prev_close={row_prev['close']:.2f}, diff={abs(row['close']-row_prev['close']):.2f}")
-        #         logger.debug(f"DEBUG: 跳过空头开仓 due to price jump at {row.get('close_time')}, close={row['close']}, prev_close={row_prev['close']}, diff={abs(row['close']-row_prev['close'])}")
-
-        # PRICE_CHANGE_COUNT
-        if state_prices is not None and config.PRICE_CHANGE_COUNT > 0:
-            max_price = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT:].max()
-            min_price = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT:].min()
-            if max_price > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT and min_price < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT:
-                is_short = False
-                reasons.append(f"价格变化限制_COUNT: min={min_price:.2f}, max={max_price:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price change limit at {row.get('close_time')}, min_price={min_price}, max_price={max_price}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT}")
-
-        # PRICE_CHANGE_COUNT_B
-        if state_prices is not None and config.PRICE_CHANGE_COUNT_B > 0:
-            max_price_b = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_B:].max()
-            min_price_b = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_B:].min()
-            if max_price_b > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT_B and min_price_b < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT_B:
-                is_short = False
-                reasons.append(f"价格变化限制_COUNT_B: min={min_price_b:.2f}, max={max_price_b:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price change limit at {row.get('close_time')}, min_price_b={min_price_b}, max_price_b={max_price_b}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT_B}")
-
-        # PRICE_CHANGE_COUNT_C
-        if state_prices is not None and config.PRICE_CHANGE_COUNT_C > 0:
-            max_price_c = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_C:].max()
-            min_price_c = state_prices.iloc[-1*config.PRICE_CHANGE_COUNT_C:].min()
-            if max_price_c > row['close'] + row['close'] * config.PRICE_CHANGE_LIMIT_C and min_price_c < row['close'] - row['close'] * config.PRICE_CHANGE_LIMIT_C:
-                is_short = False
-                reasons.append(f"价格变化限制_COUNT_C: min={min_price_c:.2f}, max={max_price_c:.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to price change limit at {row.get('close_time')}, min_price_c={min_price_c}, max_price_c={max_price_c}, close={row['close']}, limit={config.PRICE_CHANGE_LIMIT_C}")
-
-        # ENABLE_MA5_MA10 - 成交量检查 (空头要求 vol_ma5 < vol_ma10)
-        if config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
-            if row.get('vol_ma5') < row.get('vol_ma10'):
-                is_short = False
-                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
-
-        # 如果价格验证失败，直接返回
-        if not is_short:
-            return False, "; ".join(reasons)
+        def _pass_multi_price_change_window(side_text: str) -> bool:
+            checks = [
+                ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
+                ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
+                ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
+                ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
+                ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+            ]
+            for group_name, raw_count, raw_limit in checks:
+                try:
+                    count = int(raw_count)
+                except Exception:
+                    count = 0
+                try:
+                    limit = float(raw_limit)
+                except Exception:
+                    limit = 0.0
+                if state_prices is None or count <= 0 or limit <= 0:
+                    continue
+                price_slice = state_prices.iloc[-1 * count:]
+                if price_slice.empty:
+                    continue
+                max_price = price_slice.max()
+                min_price = price_slice.min()
+                upper = row['close'] + row['close'] * limit
+                lower = row['close'] - row['close'] * limit
+                if max_price > upper and min_price < lower:
+                    logger.debug(
+                        "DEBUG: 跳过%s开仓 due to price change limit at %s, group=%s, min_price=%s, max_price=%s, close=%s, limit=%s, count=%s",
+                        side_text,
+                        row.get('close_time'),
+                        group_name,
+                        min_price,
+                        max_price,
+                        row['close'],
+                        limit,
+                        count,
+                    )
+                    return False
+            return True
 
         # ========== 15分钟指标检查 ==========
         # HIST15限制 (空头符号相反)
@@ -1097,6 +1125,20 @@ class SignalCalculator:
         if is_short and j_4h < config.T0_J4H_LIMIT_KONG:
             is_short = False
             reasons.append(f"J4H: {j_4h:.2f}，T0_J4H_LIMIT_KONG={config.T0_J4H_LIMIT_KONG}")
+
+        if is_short and not _pass_multi_m_price_change("空头"):
+            is_short = False
+            reasons.append("价格跳空过滤未通过")
+
+        if is_short and not _pass_multi_price_change_window("空头"):
+            is_short = False
+            reasons.append("价格变化窗口过滤未通过")
+
+        if is_short and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
+            if row.get('vol_ma5') < row.get('vol_ma10'):
+                is_short = False
+                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
+                logger.debug(f"DEBUG: 跳过空头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
 
         # 通过所有检查
         if is_short:
