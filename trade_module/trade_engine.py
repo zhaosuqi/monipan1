@@ -332,16 +332,24 @@ class TradeEngine:
         remote_entry = float(pos_info.get('entry_price', 0)) or price
         
         # 检查本地持仓是否与交易所一致
+        # 容差改为 1.0 USD，避免币安返回的精度截断（如 72450.49999994 vs 72450.51）触发不必要的持仓重建
         if len(self.positions) == 1:
             local_pos = self.positions[0]
             if (local_pos.side == remote_side and 
                 local_pos.contracts == remote_contracts and
-                abs(local_pos.entry_price - remote_entry) < 0.01):
+                abs(local_pos.entry_price - remote_entry) < 1.0):
                 # 完全一致，无需处理
                 return False
         
         # 不一致，用交易所持仓替换本地
         old_positions = [(p.side, p.entry_price, p.contracts) for p in self.positions]
+
+        # 找到与交易所持仓方向/数量匹配的旧持仓，继承关键字段（避免丢失 sl_order_id 等状态）
+        old_matched = next(
+            (p for p in self.positions
+             if p.side == remote_side and p.contracts == remote_contracts),
+            None
+        )
         
         # 清空本地
         self.positions.clear()
@@ -349,33 +357,39 @@ class TradeEngine:
         # 从交易所创建新的本地持仓
         cn = config.CONTRACT_NOTIONAL
         qty_per_contract = cn / remote_entry if remote_entry > 0 else 0
-        trace_id = str(uuid.uuid4())
+        trace_id = old_matched.trace_id if old_matched else str(uuid.uuid4())
         
         new_pos = Position(
-            id=str(uuid.uuid4()),
+            id=old_matched.id if old_matched else str(uuid.uuid4()),
             side=remote_side,
             entry_price=remote_entry,
-            entry_time=ts,
+            entry_time=old_matched.entry_time if old_matched else ts,
             contracts=remote_contracts,
             entry_contracts=remote_contracts,
             contract_size_btc=qty_per_contract,
-            tp_hit=[],
-            tp_activated=False,
-            tp_hit_value=0.0,
+            tp_hit=list(old_matched.tp_hit) if old_matched else [],
+            tp_activated=old_matched.tp_activated if old_matched else False,
+            tp_hit_value=old_matched.tp_hit_value if old_matched else 0.0,
             trace_id=trace_id,
-            benchmark_price=remote_entry,
-            entry_hist4=None,
-            entry_dif4=None,
-            entry_hist1h=None,
-            entry_hist15=None,
+            benchmark_price=old_matched.benchmark_price if old_matched else remote_entry,
+            entry_hist4=old_matched.entry_hist4 if old_matched else None,
+            entry_dif4=old_matched.entry_dif4 if old_matched else None,
+            entry_hist1h=old_matched.entry_hist1h if old_matched else None,
+            entry_hist15=old_matched.entry_hist15 if old_matched else None,
         )
+        # 继承止损单 ID，防止止损单成交后无法检测并推送飞书通知
+        if old_matched:
+            new_pos.sl_order_id = old_matched.sl_order_id
+            new_pos.sl_order_attempts = old_matched.sl_order_attempts
+            new_pos.sl_order_last_time = old_matched.sl_order_last_time
         
         self.positions.append(new_pos)
         
         self.logger.warning(
             f"🔄 持仓同步: 本地与交易所不一致，已同步 | "
             f"交易所: {remote_side}@{remote_entry:.2f} x{remote_contracts} | "
-            f"原本地: {old_positions}"
+            f"原本地: {old_positions} | "
+            f"继承sl_order_id: {new_pos.sl_order_id}"
         )
         return True
 
