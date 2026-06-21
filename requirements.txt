@@ -1,0 +1,24 @@
+# Python 3.9+
+
+# Binance exchange clients
+binance-connector==3.12.0
+python-binance==1.0.32
+
+# Data processing and database access
+numpy==1.26.2
+pandas==2.1.4
+SQLAlchemy==2.0.23
+
+# Environment configuration
+python-dotenv==1.0.0
+
+# Web, notifications, and websocket data sync
+Flask==3.1.0
+requests==2.31.0
+websockets==15.0.1
+
+# Excel export
+openpyxl==3.1.2
+
+# Tests
+pytest==7.4.3
