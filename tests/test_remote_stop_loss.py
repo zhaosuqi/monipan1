@@ -121,6 +121,45 @@ class FakeSyncExchange:
         )
 
 
+class FakeDiscoveredStopExchange:
+    connected = True
+
+    def __init__(self):
+        self.stop_order_id = 'sl-discovered-1'
+
+    def get_open_orders(self, symbol):
+        return [
+            Order(
+                order_id=self.stop_order_id,
+                client_order_id='sl-close-all',
+                symbol=symbol,
+                side=OrderSide.BUY,
+                type=OrderType.STOP_MARKET,
+                status=OrderStatus.NEW,
+                price=0.0,
+                quantity=0.0,
+                stop_price=102.0,
+            )
+        ]
+
+    def get_position(self, symbol):
+        return None
+
+    def get_order(self, symbol, order_id):
+        return Order(
+            order_id=order_id,
+            client_order_id='sl-close-all',
+            symbol=symbol,
+            side=OrderSide.BUY,
+            type=OrderType.STOP_MARKET,
+            status=OrderStatus.FILLED,
+            price=0.0,
+            quantity=0.0,
+            avg_price=102.5,
+            stop_price=102.0,
+        )
+
+
 def make_position():
     return Position(
         id='pos-1',
@@ -147,6 +186,9 @@ def make_engine(exchange):
     engine.locked_capital = 0.0
     engine.stoploss_time = None
     engine.stoploss_side = None
+    engine.order_sync_interval = 120
+    engine.order_sync_log_limit = 5
+    engine.last_order_sync = None
     return engine
 
 
@@ -274,3 +316,79 @@ def test_sync_positions_reconciles_filled_remote_stop_loss():
     assert captured['close'][2] == 95.5
     assert captured['close'][3] == 'stop_loss_remote'
     assert captured['close'][4] == 'sl-remote-1'
+
+
+def test_open_order_scan_binds_remote_stop_loss_before_fill_reconciliation():
+    engine = make_engine(FakeDiscoveredStopExchange())
+    pos = make_position()
+    pos.side = 'short'
+    engine.positions = [pos]
+
+    captured = {}
+
+    def fake_poll(order_id, fallback_price):
+        captured['poll'] = (order_id, fallback_price)
+        return 102.5
+
+    def fake_close_position_after_sl(found_pos, ts, price, reason, order_id=None):
+        captured['close'] = (found_pos, ts, price, reason, order_id)
+
+    engine._poll_close_order_price = fake_poll
+    engine._close_position_after_sl = fake_close_position_after_sl
+
+    TradeEngine._maybe_sync_remote_orders(
+        engine,
+        pd.Timestamp('2026-04-11 08:01:00'),
+        100.0,
+    )
+
+    assert pos.sl_order_id == 'sl-discovered-1'
+
+    changed = TradeEngine.sync_positions_from_exchange(
+        engine,
+        pd.Timestamp('2026-04-11 08:02:00'),
+        102.5,
+    )
+
+    assert changed is True
+    assert captured['poll'] == ('sl-discovered-1', 102.0)
+    assert captured['close'][0] is pos
+    assert captured['close'][2] == 102.5
+    assert captured['close'][3] == 'stop_loss_remote'
+    assert captured['close'][4] == 'sl-discovered-1'
+
+
+def test_sync_positions_uses_persisted_remote_stop_loss_id_when_position_lost_id():
+    engine = make_engine(FakeSyncExchange())
+    pos = make_position()
+    engine.positions = [pos]
+
+    captured = {}
+
+    def fake_find_persisted(found_pos):
+        captured['lookup'] = found_pos
+        return 'sl-remote-1'
+
+    def fake_poll(order_id, fallback_price):
+        captured['poll'] = (order_id, fallback_price)
+        return 95.5
+
+    def fake_close_position_after_sl(found_pos, ts, price, reason, order_id=None):
+        captured['close'] = (found_pos, ts, price, reason, order_id)
+
+    engine._find_persisted_remote_stop_order_id = fake_find_persisted
+    engine._poll_close_order_price = fake_poll
+    engine._close_position_after_sl = fake_close_position_after_sl
+
+    changed = TradeEngine.sync_positions_from_exchange(
+        engine,
+        pd.Timestamp('2026-04-11 08:02:00'),
+        100.0,
+    )
+
+    assert changed is True
+    assert captured['lookup'] is pos
+    assert pos.sl_order_id == 'sl-remote-1'
+    assert captured['poll'] == ('sl-remote-1', 98.0)
+    assert captured['close'][0] is pos
+    assert captured['close'][3] == 'stop_loss_remote'

@@ -157,6 +157,7 @@ class TradeEngine:
         self.order_sync_interval = getattr(config, 'ORDER_SYNC_INTERVAL', 120)
         self.order_sync_log_limit = getattr(config, 'ORDER_SYNC_LOG_LIMIT', 5)
         self.last_order_sync: Optional[pd.Timestamp] = None
+        self.remote_stop_orders: Dict[str, Any] = {}
 
         # 后台订单巡检线程，避免依赖主循环
         self._order_sync_stop_event = threading.Event()
@@ -256,16 +257,143 @@ class TradeEngine:
             return False
 
         pos.sl_order_id = str(order.order_id)
+        self._remember_remote_stop_order(order, ts)
         self.logger.info(
             f"🛡️ 已挂远端保护止损单 | 持仓ID={pos.id} | 订单ID={pos.sl_order_id} | "
             f"方向={close_side} | 止损价={stop_price:.2f} | workingType=MARK_PRICE"
         )
         return True
 
+    def _order_enum_value(self, value: Any) -> Any:
+        return getattr(value, 'value', value)
+
+    def _is_remote_stop_order_for_position(self, order: Any, pos: Position) -> bool:
+        """判断一个远端 STOP_MARKET 挂单是否是当前持仓的保护止损单。"""
+        order_type = self._order_enum_value(getattr(order, 'type', None))
+        order_status = self._order_enum_value(getattr(order, 'status', None))
+        order_side = self._order_enum_value(getattr(order, 'side', None))
+
+        if order_type != 'STOP_MARKET':
+            return False
+        if order_status not in ('NEW', 'PARTIALLY_FILLED', 'FILLED'):
+            return False
+
+        expected_side = 'SELL' if pos.side == 'long' else 'BUY'
+        if order_side != expected_side:
+            return False
+
+        stop_price = float(getattr(order, 'stop_price', 0) or 0)
+        if stop_price <= 0:
+            return True
+
+        expected_stop = self._calculate_stop_price(pos)
+        return abs(stop_price - expected_stop) <= 2.0
+
+    def _remember_remote_stop_order(self, order: Any, ts: pd.Timestamp) -> None:
+        """缓存巡检发现的远端保护止损单，并尽量绑定到当前持仓。"""
+        order_id = str(getattr(order, 'order_id', '') or '')
+        if not order_id:
+            return
+
+        order_type = self._order_enum_value(getattr(order, 'type', None))
+        if order_type != 'STOP_MARKET':
+            return
+
+        remote_stop_orders = getattr(self, 'remote_stop_orders', None)
+        if remote_stop_orders is None:
+            self.remote_stop_orders = {}
+            remote_stop_orders = self.remote_stop_orders
+        remote_stop_orders[order_id] = order
+
+        for pos in self.positions:
+            if pos.sl_order_id:
+                continue
+            if not self._is_remote_stop_order_for_position(order, pos):
+                continue
+
+            pos.sl_order_id = order_id
+            pos.sl_order_last_time = ts
+            self.logger.warning(
+                f"🔗 绑定远端保护止损单 | 持仓ID={pos.id} | "
+                f"订单ID={order_id} | 方向={pos.side}"
+            )
+            break
+
+    def _find_persisted_remote_stop_order_id(self, pos: Position) -> Optional[str]:
+        """从本地订单表找回可能丢失的远端保护止损单 ID。"""
+        manager = getattr(self, 'order_manager', None)
+        db = getattr(manager, 'db', None)
+        if db is None:
+            exchange_manager = getattr(getattr(self, 'exchange', None), 'local_order_manager', None)
+            db = getattr(exchange_manager, 'db', None)
+        if db is None:
+            return None
+
+        expected_stop = self._calculate_stop_price(pos)
+        expected_close_side = 'SELL' if pos.side == 'long' else 'BUY'
+        # BinanceExchange 将 BUY/SELL 映射为 local_order.side 的 long/short。
+        expected_local_side = 'short' if expected_close_side == 'SELL' else 'long'
+
+        def row_matches(row) -> bool:
+            try:
+                row_price = float(row['price'] or 0)
+            except (TypeError, ValueError):
+                row_price = 0
+            if row_price > 0 and abs(row_price - expected_stop) > 2.0:
+                return False
+            return True
+
+        try:
+            if pos.trace_id:
+                rows = db.fetchall(
+                    """
+                    SELECT order_id, price, side, trace_id
+                    FROM orders
+                    WHERE symbol = ?
+                      AND order_type = 'SL'
+                      AND status IN ('PENDING', 'PARTIALLY_FILLED')
+                      AND trace_id = ?
+                    ORDER BY created_time DESC
+                    LIMIT 5
+                    """,
+                    (config.SYMBOL, pos.trace_id),
+                )
+                for row in rows:
+                    if row_matches(row):
+                        return str(row['order_id'])
+
+            rows = db.fetchall(
+                """
+                SELECT order_id, price, side, trace_id
+                FROM orders
+                WHERE symbol = ?
+                  AND order_type = 'SL'
+                  AND status IN ('PENDING', 'PARTIALLY_FILLED')
+                  AND side = ?
+                ORDER BY created_time DESC
+                LIMIT 10
+                """,
+                (config.SYMBOL, expected_local_side),
+            )
+            for row in rows:
+                if row_matches(row):
+                    return str(row['order_id'])
+        except Exception as exc:
+            self.logger.warning(f"查询本地保护止损单失败: {exc}")
+
+        return None
+
     def _reconcile_remote_stop_loss_fill(self, pos: Position, ts: pd.Timestamp) -> bool:
         """当交易所已无持仓时，检查是否是远端保护止损单触发。"""
         if not pos.sl_order_id:
-            return False
+            recovered_order_id = self._find_persisted_remote_stop_order_id(pos)
+            if not recovered_order_id:
+                return False
+            pos.sl_order_id = str(recovered_order_id)
+            self.logger.warning(
+                f"🔎 从本地记录找回远端保护止损单 | 持仓ID={pos.id} | "
+                f"订单ID={pos.sl_order_id}"
+            )
 
         try:
             order = self.exchange.get_order(config.SYMBOL, pos.sl_order_id)
@@ -415,6 +543,9 @@ class TradeEngine:
 
             # 打印部分挂单便于观察
             if open_orders:
+                for od in open_orders:
+                    self._remember_remote_stop_order(od, ts)
+
                 self.logger.info("🔍 挂单巡检 | 总数=%s", len(open_orders))
                 for idx, od in enumerate(open_orders[: self.order_sync_log_limit]):
                     self.logger.info(
