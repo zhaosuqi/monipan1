@@ -12,6 +12,7 @@
 5. 失败 -> 作废本地订单，继续寻找信号
 """
 
+import math
 import threading
 import time
 import uuid
@@ -91,6 +92,8 @@ class Trade:
 
 
 TRADE_HISTORY_REPORT_COUNT = 10
+TRADE_HISTORY_FETCH_LIMIT = 100
+TRADE_HISTORY_MAX_FETCH_PAGES = 20
 
 
 class TradeEngine:
@@ -175,7 +178,15 @@ class TradeEngine:
 
         # 交易历史报告定时发送
         self.trade_history_report_interval = getattr(config, 'TRADE_HISTORY_REPORT_INTERVAL', 0)
-        self.trade_history_report_count = TRADE_HISTORY_REPORT_COUNT
+        configured_report_count = getattr(
+            config,
+            'TRADE_HISTORY_REPORT_COUNT',
+            TRADE_HISTORY_REPORT_COUNT,
+        )
+        self.trade_history_report_count = max(
+            10,
+            int(configured_report_count or TRADE_HISTORY_REPORT_COUNT)
+        )
         self.last_trade_history_report: Optional[pd.Timestamp] = None
         self._trade_report_stop_event = threading.Event()
         self._trade_report_thread = None
@@ -610,114 +621,222 @@ class TradeEngine:
                 self.logger.warning(f"发送交易历史报告异常: {e}", exc_info=True)
             self._trade_report_stop_event.wait(interval_seconds)
 
+    @staticmethod
+    def _trade_value_to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value if value is not None else default)
+        except (TypeError, ValueError):
+            return default
+        if math.isnan(number) or math.isinf(number):
+            return default
+        return number
+
+    @staticmethod
+    def _trade_dedupe_key(trade: Dict[str, Any]) -> tuple:
+        trade_id = trade.get('id')
+        if trade_id is not None:
+            return ('id', trade_id)
+        return (
+            'fallback',
+            trade.get('orderId'),
+            trade.get('time'),
+            trade.get('side'),
+            trade.get('price'),
+            trade.get('qty'),
+        )
+
+    def _build_trade_history_report_trades(
+        self,
+        trades_from_api: List[Dict[str, Any]],
+        target_count: int,
+    ) -> List[Dict[str, Any]]:
+        """将交易所成交明细重建为最近 target_count 笔完整平仓交易。"""
+        if not trades_from_api:
+            return []
+
+        from collections import defaultdict
+
+        grouped = defaultdict(list)
+        for t in trades_from_api:
+            grouped[t.get('orderId')].append(t)
+
+        order_summaries = []
+        for order_id, order_trades in grouped.items():
+            total_pnl = sum(
+                self._trade_value_to_float(t.get('realizedPnl', 0))
+                for t in order_trades
+            )
+            total_fee = sum(
+                self._trade_value_to_float(t.get('commission', 0))
+                for t in order_trades
+            )
+            total_qty = sum(
+                self._trade_value_to_float(t.get('qty', 0))
+                for t in order_trades
+            )
+            total_notional = sum(
+                self._trade_value_to_float(t.get('price', 0)) *
+                self._trade_value_to_float(t.get('qty', 0))
+                for t in order_trades
+            )
+            first_trade = sorted(
+                order_trades,
+                key=lambda item: item.get('time', 0) or 0
+            )[0]
+            trade_side = first_trade.get('side')  # BUY or SELL
+            avg_price = total_notional / total_qty if total_qty else 0
+            trade_time = max(t.get('time', 0) or 0 for t in order_trades)
+
+            order_summaries.append({
+                'order_id': order_id,
+                'time': trade_time,
+                'trade_side': trade_side,
+                'price': avg_price,
+                'qty': total_qty,
+                'pnl': total_pnl,
+                'fee': total_fee,
+                'is_close': abs(total_pnl) > 0
+            })
+
+        order_summaries.sort(key=lambda x: x['time'])
+        long_opens = []
+        short_opens = []
+        close_orders = []
+
+        for order in order_summaries:
+            if not order['is_close']:
+                if order['trade_side'] == 'BUY':
+                    long_opens.append(order)
+                else:
+                    short_opens.append(order)
+                continue
+
+            if order['trade_side'] == 'SELL':
+                position_side = 'long'
+                opens_list = long_opens
+            else:
+                position_side = 'short'
+                opens_list = short_opens
+
+            entry_price = 0
+            for i in range(len(opens_list) - 1, -1, -1):
+                if opens_list[i]['time'] < order['time']:
+                    entry_price = opens_list[i]['price']
+                    opens_list.pop(i)
+                    break
+
+            if entry_price <= 0:
+                continue
+
+            exit_time = pd.to_datetime(
+                order['time'], unit='ms'
+            ) if order['time'] else None
+
+            close_orders.append({
+                'exit_time': exit_time,
+                'side': position_side,
+                'entry_price': entry_price,
+                'exit_price': order['price'],
+                'net_pnl_btc': order['pnl'],
+                'fee_btc': order['fee']
+            })
+
+        close_orders.sort(
+            key=lambda x: x['exit_time'] or pd.Timestamp.min,
+            reverse=True
+        )
+        report_trades = close_orders[:target_count]
+        report_trades.reverse()
+        return report_trades
+
+    def _fetch_trade_history_report_trades(
+        self,
+        target_count: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """分页回溯交易所成交明细，直到拼出目标数量的完整交易或历史耗尽。"""
+        target = max(
+            10,
+            int(target_count or getattr(self, 'trade_history_report_count', TRADE_HISTORY_REPORT_COUNT))
+        )
+        all_trades: List[Dict[str, Any]] = []
+        seen_keys = set()
+        end_time = None
+        previous_earliest_ms = None
+
+        for page_index in range(TRADE_HISTORY_MAX_FETCH_PAGES):
+            batch = self.exchange.get_user_trades(
+                config.SYMBOL,
+                limit=TRADE_HISTORY_FETCH_LIMIT,
+                end_time=end_time,
+                raise_on_error=True
+            )
+            self.logger.info(
+                f"   第 {page_index + 1} 页成交明细数: {len(batch) if batch else 0}"
+            )
+            if not batch:
+                break
+
+            for trade in batch:
+                key = self._trade_dedupe_key(trade)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                all_trades.append(trade)
+
+            report_trades = self._build_trade_history_report_trades(
+                all_trades,
+                target
+            )
+            self.logger.info(
+                f"   已重建完整平仓交易数: {len(report_trades)}/{target}"
+            )
+            if len(report_trades) >= target:
+                return report_trades
+
+            trade_times = [
+                int(t.get('time'))
+                for t in batch
+                if t.get('time') is not None
+            ]
+            if not trade_times:
+                break
+            earliest_ms = min(trade_times)
+            if (
+                previous_earliest_ms is not None and
+                earliest_ms >= previous_earliest_ms
+            ):
+                self.logger.warning("   成交分页未继续向更早时间推进，停止回溯")
+                break
+
+            previous_earliest_ms = earliest_ms
+            end_time = datetime.fromtimestamp((earliest_ms - 1) / 1000)
+
+        return self._build_trade_history_report_trades(all_trades, target)
+
     def _send_trade_history_report(self):
         """发送交易历史报告到飞书"""
         self.logger.info("=" * 60)
         self.logger.info("📊 [交易历史报告] 开始生成...")
-        self.logger.info(f"   报告固定显示最近 {TRADE_HISTORY_REPORT_COUNT} 笔交易")
-        
+        target_count = max(
+            10,
+            int(getattr(self, 'trade_history_report_count', TRADE_HISTORY_REPORT_COUNT))
+        )
+        self.logger.info(f"   报告固定显示最近 {target_count} 笔交易")
+
         trade_list = []
 
         self.logger.info("   从交易所 API 实时获取历史成交...")
         try:
-            trades_from_api = self.exchange.get_user_trades(
-                config.SYMBOL, limit=100, raise_on_error=True
-            )
-            self.logger.info(
-                f"   交易所返回成交记录数: "
-                f"{len(trades_from_api) if trades_from_api else 0}"
-            )
-
-            if trades_from_api:
-                from collections import defaultdict
-
-                grouped = defaultdict(list)
-                for t in trades_from_api:
-                    grouped[t.get('orderId')].append(t)
-
-                order_summaries = []
-                for order_id, order_trades in grouped.items():
-                    total_pnl = sum(
-                        float(t.get('realizedPnl', 0) or 0)
-                        for t in order_trades
-                    )
-                    total_fee = sum(
-                        float(t.get('commission', 0) or 0)
-                        for t in order_trades
-                    )
-                    total_qty = sum(
-                        float(t.get('qty', 0) or 0)
-                        for t in order_trades
-                    )
-                    total_notional = sum(
-                        float(t.get('price', 0) or 0) * float(t.get('qty', 0) or 0)
-                        for t in order_trades
-                    )
-                    first_trade = order_trades[0]
-                    trade_side = first_trade.get('side')  # BUY or SELL
-                    avg_price = total_notional / total_qty if total_qty else 0
-                    trade_time = max(t.get('time', 0) or 0 for t in order_trades)
-
-                    order_summaries.append({
-                        'order_id': order_id,
-                        'time': trade_time,
-                        'trade_side': trade_side,
-                        'price': avg_price,
-                        'qty': total_qty,
-                        'pnl': total_pnl,
-                        'fee': total_fee,
-                        'is_close': abs(total_pnl) > 0
-                    })
-
-                order_summaries.sort(key=lambda x: x['time'])
-                long_opens = []
-                short_opens = []
-                close_orders = []
-
-                for order in order_summaries:
-                    if not order['is_close']:
-                        if order['trade_side'] == 'BUY':
-                            long_opens.append(order)
-                        else:
-                            short_opens.append(order)
-                    else:
-                        if order['trade_side'] == 'SELL':
-                            position_side = 'long'
-                            opens_list = long_opens
-                        else:
-                            position_side = 'short'
-                            opens_list = short_opens
-
-                        entry_price = 0
-                        for i in range(len(opens_list) - 1, -1, -1):
-                            if opens_list[i]['time'] < order['time']:
-                                entry_price = opens_list[i]['price']
-                                opens_list.pop(i)
-                                break
-
-                        exit_time = pd.to_datetime(
-                            order['time'], unit='ms'
-                        ) if order['time'] else None
-
-                        close_orders.append({
-                            'exit_time': exit_time,
-                            'side': position_side,
-                            'entry_price': entry_price,
-                            'exit_price': order['price'],
-                            'net_pnl_btc': order['pnl'],
-                            'fee_btc': order['fee']
-                        })
-
-                self.logger.info(f"   筛选出平仓订单数: {len(close_orders)}")
-                close_orders.sort(key=lambda x: x['exit_time'] or pd.Timestamp.min, reverse=True)
-                trade_list = close_orders[:TRADE_HISTORY_REPORT_COUNT]
-                trade_list.reverse()
-                self.logger.info(f"   最终报告交易数: {len(trade_list)}")
-            else:
-                self.logger.info("   交易所返回空记录")
+            trade_list = self._fetch_trade_history_report_trades(target_count)
+            self.logger.info(f"   最终报告交易数: {len(trade_list)}")
+            if 0 < len(trade_list) < target_count:
+                self.logger.warning(
+                    f"   交易所历史不足或开仓成交缺失，仅找到 "
+                    f"{len(trade_list)}/{target_count} 笔完整交易"
+                )
         except Exception as e:
             self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
-        
+
         if not trade_list:
             self.logger.info("   暂无交易记录，跳过报告发送")
             self.logger.info("=" * 60)
