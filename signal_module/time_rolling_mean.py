@@ -45,6 +45,14 @@ class TimeRollingMean:
                 'window_minutes': window_minutes  # 时间窗口(分钟)
             }
             logger.debug(f"初始化指标 {field_name} 的时间窗口, 大小={window_minutes}分钟")
+            return
+
+        old_window = self.data[field_name].get('window_minutes')
+        if old_window != window_minutes:
+            self.data[field_name]['window_minutes'] = window_minutes
+            logger.info(
+                f"更新指标 {field_name} 的时间窗口: {old_window} -> {window_minutes}分钟"
+            )
 
     def update(self, field_name: str, timestamp: pd.Timestamp, value: float) -> Optional[float]:
         """

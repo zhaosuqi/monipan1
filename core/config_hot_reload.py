@@ -32,6 +32,33 @@ CHECK_INTERVAL = 60
 # 东八区时区
 TZ_EAST8 = timezone(timedelta(hours=8))
 
+ROLLING_MEAN_FIELD_MAP = {
+    'means_hist15_count': 'macd15m',
+    'means_dif15_count': 'dif15m',
+    'means_dea15_count': 'dea15m',
+    'means_hist15_count_2': 'macd15m_2',
+    'means_dif15_count_2': 'dif15m_2',
+    'means_dea15_count_2': 'dea15m_2',
+    'means_hist1h_count': 'macd1h',
+    'means_dif1h_count': 'dif1h',
+    'means_dea1h_count': 'dea1h',
+    'means_hist1h_count_2': 'macd1h_2',
+    'means_dif1h_count_2': 'dif1h_2',
+    'means_dea1h_count_2': 'dea1h_2',
+    'means_hist4_count': 'macd4h',
+    'means_dif4_count': 'dif4h',
+    'means_dea4_count': 'dea4h',
+    'means_hist4_count_2': 'macd4h_2',
+    'means_dif4_count_2': 'dif4h_2',
+    'means_dea4_count_2': 'dea4h_2',
+    'means_hist1d_count': 'macd1d',
+    'means_dif1d_count': 'dif1d',
+    'means_dea1d_count': 'dea1d',
+    'means_hist1d_count_2': 'macd1d_2',
+    'means_dif1d_count_2': 'dif1d_2',
+    'means_dea1d_count_2': 'dea1d_2',
+}
+
 
 class ConfigHotReloader:
     """交易参数 JSON 热加载器"""
@@ -183,7 +210,31 @@ class ConfigHotReloader:
             except Exception as e:
                 self.logger.warning(f"设置参数 {attr_name}={value} 失败: {e}")
 
+        self._sync_rolling_mean_windows(params)
         return applied
+
+    def _sync_rolling_mean_windows(self, params: Dict[str, Any]) -> int:
+        """同步热加载后的均值窗口参数到实时 rolling tracker。"""
+        try:
+            from signal_module.time_rolling_mean import get_time_rolling_mean_tracker
+        except Exception as e:
+            self.logger.warning(f"同步均值窗口失败，无法加载 tracker: {e}")
+            return 0
+
+        tracker = get_time_rolling_mean_tracker()
+        synced = 0
+        for key, value in params.items():
+            field_name = ROLLING_MEAN_FIELD_MAP.get(str(key).lower())
+            if not field_name:
+                continue
+            try:
+                window_minutes = int(value)
+            except Exception:
+                self.logger.warning(f"同步均值窗口失败，参数 {key}={value} 不是整数")
+                continue
+            tracker.init_field(field_name, window_minutes)
+            synced += 1
+        return synced
 
     def _log_changes(self, changes: Dict[str, Dict[str, Any]]):
         """将变更记录到日志"""
