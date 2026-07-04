@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from core.config import config
+from core.config_hot_reload import ROLLING_MEAN_FIELD_MAP
 from core.logger import get_logger
 from signal_module.rolling_mean_tracker import get_rolling_mean_tracker
 from signal_module.time_rolling_mean import get_time_rolling_mean_tracker
@@ -112,7 +113,18 @@ class SignalCalculator:
         if config.MEANS_DEA1D_COUNT_2 > 0:
             self.time_rolling_tracker.init_field('dea1d_2', config.MEANS_DEA1D_COUNT_2)
 
+        self._sync_rolling_windows_from_config()
         self.logger.info("信号计算器初始化完成,已配置时间窗口移动平均值")
+
+    def _sync_rolling_windows_from_config(self):
+        """Ensure rolling tracker windows match the current runtime config."""
+        for param_key, field_name in ROLLING_MEAN_FIELD_MAP.items():
+            attr_name = param_key.upper()
+            try:
+                window_minutes = int(getattr(config, attr_name))
+            except Exception:
+                continue
+            self.time_rolling_tracker.init_field(field_name, window_minutes)
 
     @staticmethod
     def _json_safe(value: Any):
@@ -217,6 +229,7 @@ class SignalCalculator:
         # 提取指标
         row = indicators
         # self.logger.info(f"计算开仓信号,指标数据: {row}")
+        self._sync_rolling_windows_from_config()
 
         # 获取当前时间戳
         ts = pd.to_datetime(row.get('open_time'))
