@@ -1,5 +1,9 @@
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +17,48 @@ def read_service_template() -> str:
 
 def read_installer() -> str:
     return INSTALLER.read_text(encoding="utf-8")
+
+
+def write_stub(path: Path, body: str) -> None:
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def run_installer_with_stubbed_systemd(
+    tmp_path: Path,
+    systemd_output: Optional[str],
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    call_log = tmp_path / "privileged-calls.log"
+
+    for command in ("dirname", "id", "mktemp", "python3", "rm"):
+        executable = shutil.which(command)
+        assert executable is not None
+        (bin_dir / command).symlink_to(executable)
+
+    if systemd_output is not None:
+        escaped_output = systemd_output.replace("'", "'\\''")
+        write_stub(bin_dir / "systemd", f"printf '%s\\n' '{escaped_output}'")
+
+    privileged_stub = 'printf "%s %s\\n" "${0##*/}" "$*" >> "$CALL_LOG"'
+    for command in ("install", "sudo", "systemctl"):
+        write_stub(bin_dir / command, privileged_stub)
+
+    env = os.environ.copy()
+    env.pop("SUDO_USER", None)
+    env["PATH"] = str(bin_dir)
+    env["CALL_LOG"] = str(call_log)
+    result = subprocess.run(
+        ["/bin/bash", str(INSTALLER)],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = call_log.read_text(encoding="utf-8") if call_log.exists() else ""
+    return result, calls
 
 
 def section_values(content: str, section: str) -> dict[str, list[str]]:
@@ -78,6 +124,7 @@ def test_systemd_service_supervision_and_hardening_contract():
     expected = {
         "RuntimeDirectory": ["db-driven-trading"],
         "RuntimeDirectoryMode": ["0700"],
+        "RuntimeDirectoryPreserve": ["restart"],
         "Restart": ["always"],
         "RestartSec": ["5"],
         "KillSignal": ["SIGINT"],
@@ -109,6 +156,48 @@ def test_installer_has_strict_mode_and_infers_project_root():
     assert "set -euo pipefail" in content
     assert 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in content
     assert 'PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"' in content
+
+
+def test_installer_rejects_missing_systemd_before_privileged_commands(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(tmp_path, None)
+
+    assert result.returncode != 0
+    assert "错误: 未找到 systemd" in result.stderr
+    assert privileged_calls == ""
+
+
+def test_installer_rejects_unparseable_systemd_version(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd version unknown",
+    )
+
+    assert result.returncode != 0
+    assert "错误: 无法解析 systemd 版本" in result.stderr
+    assert privileged_calls == ""
+
+
+def test_installer_rejects_systemd_older_than_235(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd 234 (234.11)",
+    )
+
+    assert result.returncode != 0
+    assert "错误: systemd 版本 234 过低，至少需要 235" in result.stderr
+    assert privileged_calls == ""
+
+
+def test_installer_accepts_systemd_235_and_continues_installation(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd 235 (235.1)\n+PAM +AUDIT",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "systemctl daemon-reload" in privileged_calls
+    assert "systemctl enable db-driven-trading.service" in privileged_calls
+    assert "systemctl restart db-driven-trading.service" in privileged_calls
 
 
 def test_installer_resolves_and_validates_user_and_python():

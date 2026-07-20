@@ -1,10 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_systemd_version() {
+    local systemd_bin version_output first_line version
+
+    if ! systemd_bin="$(command -v systemd)" || [[ -z "$systemd_bin" ]]; then
+        echo "错误: 未找到 systemd" >&2
+        return 1
+    fi
+    if ! version_output="$("$systemd_bin" --version 2>&1)"; then
+        echo "错误: 无法执行 systemd --version" >&2
+        return 1
+    fi
+
+    first_line="${version_output%%$'\n'*}"
+    if [[ ! "$first_line" =~ ([0-9]+) ]]; then
+        echo "错误: 无法解析 systemd 版本: $first_line" >&2
+        return 1
+    fi
+
+    version="${BASH_REMATCH[1]}"
+    if (( 10#$version < 235 )); then
+        echo "错误: systemd 版本 $version 过低，至少需要 235" >&2
+        return 1
+    fi
+}
+
 if (( $# > 1 )); then
     echo "用法: $0 [service-user]" >&2
     exit 2
 fi
+
+validate_systemd_version
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
