@@ -114,17 +114,15 @@ def test_future_state_timestamp_beyond_cooldown_is_treated_as_corrupt(tmp_path):
     assert notifier.should_send_alert(state_file, now=1000) is True
 
 
-def test_state_read_io_error_is_logged_and_fails_closed(tmp_path, monkeypatch):
-    state_file = tmp_path / "state"
+def test_state_read_io_error_is_reported_as_unavailable(tmp_path, monkeypatch):
+    state_file = tmp_path / "state-as-directory"
+    state_file.mkdir()
     logger = Mock()
     monkeypatch.setattr(notifier, "logger", logger)
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        Mock(side_effect=PermissionError("permission denied")),
-    )
 
-    assert notifier.should_send_alert(state_file, now=1000) is False
+    state = notifier.inspect_alert_state(state_file, now=1000)
+
+    assert state is notifier.AlertState.UNAVAILABLE
     logger.exception.assert_called_once()
 
 
@@ -178,6 +176,38 @@ def test_notify_failure_does_not_send_for_normal_result(tmp_path, result):
 
     assert sent is False
     assert bot.messages == []
+
+
+@pytest.mark.parametrize("cooldown_seconds", [0, -1, 1.5, "600", True])
+def test_notify_failure_rejects_invalid_direct_cooldown(
+    tmp_path, monkeypatch, cooldown_seconds
+):
+    state_file = tmp_path / "state"
+    fallback_state_file = tmp_path / "fallback"
+    bot = RecordingBot()
+    logger = Mock()
+    monkeypatch.setattr(notifier, "logger", logger)
+
+    sent = notifier.notify_failure(
+        unit="db-driven-trading.service",
+        result="exit-code",
+        exit_code="exited",
+        exit_status="1",
+        state_file=state_file,
+        fallback_state_file=fallback_state_file,
+        cooldown_seconds=cooldown_seconds,
+        bot=bot,
+        clock=lambda: 1000,
+        hostname=lambda: "trade-host",
+    )
+
+    assert sent is False
+    assert bot.messages == []
+    assert state_file.exists() is False
+    assert fallback_state_file.exists() is False
+    logger.error.assert_called_once_with(
+        "告警冷却秒数必须为正整数: %r", cooldown_seconds
+    )
 
 
 def test_abnormal_exit_sends_immediately_and_records_success(tmp_path):
@@ -345,10 +375,15 @@ def test_primary_write_failure_uses_fallback_to_suppress_repeat(
     assert second_bot.messages == []
 
 
-def test_primary_read_io_error_prevents_send_even_with_fallback(tmp_path):
+def test_primary_unavailable_uses_allowed_fallback_and_sends(
+    tmp_path, monkeypatch
+):
     primary_state_file = tmp_path / "primary-as-directory"
     primary_state_file.mkdir()
+    fallback_state_file = tmp_path / "fallback"
     bot = RecordingBot()
+    logger = Mock()
+    monkeypatch.setattr(notifier, "logger", logger)
 
     sent = notifier.notify_failure(
         unit="db-driven-trading.service",
@@ -356,7 +391,64 @@ def test_primary_read_io_error_prevents_send_even_with_fallback(tmp_path):
         exit_code="exited",
         exit_status="1",
         state_file=primary_state_file,
-        fallback_state_file=tmp_path / "fallback",
+        fallback_state_file=fallback_state_file,
+        bot=bot,
+        clock=lambda: 1000,
+        hostname=lambda: "trade-host",
+    )
+
+    assert sent is True
+    assert len(bot.messages) == 1
+    assert fallback_state_file.read_text(encoding="utf-8") == "1000"
+    assert logger.exception.call_count == 2
+
+
+def test_primary_unavailable_obeys_fallback_cooldown(tmp_path, monkeypatch):
+    primary_state_file = tmp_path / "primary-as-directory"
+    primary_state_file.mkdir()
+    fallback_state_file = tmp_path / "fallback"
+    fallback_state_file.write_text("1000", encoding="utf-8")
+    bot = RecordingBot()
+    logger = Mock()
+    monkeypatch.setattr(notifier, "logger", logger)
+
+    sent = notifier.notify_failure(
+        unit="db-driven-trading.service",
+        result="resources",
+        exit_code="exited",
+        exit_status="1",
+        state_file=primary_state_file,
+        fallback_state_file=fallback_state_file,
+        bot=bot,
+        clock=lambda: 1200,
+        hostname=lambda: "trade-host",
+    )
+
+    assert sent is False
+    assert bot.messages == []
+    logger.warning.assert_called_once_with(
+        "备用异常退出告警处于冷却期，跳过发送: unit=%s result=%s",
+        "db-driven-trading.service",
+        "resources",
+    )
+
+
+def test_both_primary_and_fallback_unavailable_fail_closed(tmp_path, monkeypatch):
+    primary_state_file = tmp_path / "primary-as-directory"
+    primary_state_file.mkdir()
+    fallback_state_file = tmp_path / "fallback-as-directory"
+    fallback_state_file.mkdir()
+    bot = RecordingBot()
+    logger = Mock()
+    monkeypatch.setattr(notifier, "logger", logger)
+
+    sent = notifier.notify_failure(
+        unit="db-driven-trading.service",
+        result="resources",
+        exit_code="exited",
+        exit_status="1",
+        state_file=primary_state_file,
+        fallback_state_file=fallback_state_file,
         bot=bot,
         clock=lambda: 1000,
         hostname=lambda: "trade-host",
@@ -364,6 +456,10 @@ def test_primary_read_io_error_prevents_send_even_with_fallback(tmp_path):
 
     assert sent is False
     assert bot.messages == []
+    assert logger.exception.call_count == 2
+    logger.error.assert_called_once_with(
+        "主告警和备用告警状态均不可用，停止发送以避免重复告警"
+    )
 
 
 def test_default_fallback_prefers_writable_run_user_directory(tmp_path):

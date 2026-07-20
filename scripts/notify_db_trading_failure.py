@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -35,10 +36,43 @@ logger.propagate = False
 TZ_EAST8 = timezone(timedelta(hours=8))
 
 
+class AlertState(Enum):
+    ALLOWED = "allowed"
+    COOLDOWN = "cooldown"
+    UNAVAILABLE = "unavailable"
+
+
 def is_abnormal_exit(service_result: Optional[str]) -> bool:
     """Return whether a systemd SERVICE_RESULT represents an abnormal exit."""
     normalized = (service_result or "").strip().lower()
     return normalized not in ("", "success")
+
+
+def inspect_alert_state(
+    state_file: Path,
+    now: float,
+    cooldown_seconds: int = 600,
+) -> AlertState:
+    """Inspect one cooldown state without collapsing I/O failure into cooldown."""
+    try:
+        last_sent = float(state_file.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        return AlertState.ALLOWED
+    except OSError:
+        logger.exception("读取告警冷却状态失败: %s", state_file)
+        return AlertState.UNAVAILABLE
+    except ValueError:
+        return AlertState.ALLOWED
+
+    if not math.isfinite(last_sent):
+        return AlertState.ALLOWED
+    if last_sent > now:
+        if last_sent - now > cooldown_seconds:
+            return AlertState.ALLOWED
+        return AlertState.COOLDOWN
+    if now - last_sent >= cooldown_seconds:
+        return AlertState.ALLOWED
+    return AlertState.COOLDOWN
 
 
 def should_send_alert(
@@ -46,22 +80,11 @@ def should_send_alert(
     now: float,
     cooldown_seconds: int = 600,
 ) -> bool:
-    """Return whether the alert cooldown permits a new notification."""
-    try:
-        last_sent = float(state_file.read_text(encoding="utf-8").strip())
-    except FileNotFoundError:
-        return True
-    except OSError:
-        logger.exception("读取告警冷却状态失败，停止发送以避免重复告警: %s", state_file)
-        return False
-    except ValueError:
-        return True
-
-    if not math.isfinite(last_sent):
-        return True
-    if last_sent > now:
-        return last_sent - now > cooldown_seconds
-    return now - last_sent >= cooldown_seconds
+    """Return whether one readable cooldown state permits notification."""
+    return (
+        inspect_alert_state(state_file, now, cooldown_seconds)
+        is AlertState.ALLOWED
+    )
 
 
 def record_alert(state_file: Path, now: float) -> None:
@@ -165,13 +188,22 @@ def notify_failure(
     hostname: Callable[[], str] = socket.gethostname,
 ) -> bool:
     """Send one abnormal-exit alert when permitted by the cooldown."""
+    if (
+        isinstance(cooldown_seconds, bool)
+        or not isinstance(cooldown_seconds, int)
+        or cooldown_seconds <= 0
+    ):
+        logger.error("告警冷却秒数必须为正整数: %r", cooldown_seconds)
+        return False
+
     if not is_abnormal_exit(result):
         logger.info("服务正常停止，不发送飞书告警: unit=%s result=%s", unit, result)
         return False
 
     now = clock()
     state_file = Path(state_file)
-    if not should_send_alert(state_file, now, cooldown_seconds):
+    primary_state = inspect_alert_state(state_file, now, cooldown_seconds)
+    if primary_state is AlertState.COOLDOWN:
         logger.warning(
             "异常退出告警处于冷却期，跳过发送: unit=%s result=%s",
             unit,
@@ -179,25 +211,38 @@ def notify_failure(
         )
         return False
 
+    resolved_fallback_state_file = None
     try:
-        fallback_state_file = (
+        resolved_fallback_state_file = (
             Path(fallback_state_file)
             if fallback_state_file is not None
             else resolve_fallback_state_file(unit)
         )
     except Exception:
-        logger.exception("无法准备备用告警冷却状态，停止发送以避免重复告警")
-        return False
+        logger.exception("无法准备备用告警冷却状态")
+        fallback_state = AlertState.UNAVAILABLE
+    else:
+        if resolved_fallback_state_file == state_file:
+            fallback_state = primary_state
+        else:
+            fallback_state = inspect_alert_state(
+                resolved_fallback_state_file,
+                now,
+                cooldown_seconds,
+            )
 
-    if (
-        fallback_state_file != state_file
-        and not should_send_alert(fallback_state_file, now, cooldown_seconds)
-    ):
+    if fallback_state is AlertState.COOLDOWN:
         logger.warning(
             "备用异常退出告警处于冷却期，跳过发送: unit=%s result=%s",
             unit,
             result,
         )
+        return False
+    if (
+        primary_state is AlertState.UNAVAILABLE
+        and fallback_state is AlertState.UNAVAILABLE
+    ):
+        logger.error("主告警和备用告警状态均不可用，停止发送以避免重复告警")
         return False
 
     timestamp = datetime.fromtimestamp(now, TZ_EAST8).strftime(
@@ -227,9 +272,12 @@ def notify_failure(
         record_alert(state_file, now)
     except Exception:
         logger.exception("飞书告警已发送，但记录主告警冷却时间失败")
-    if fallback_state_file != state_file:
+    if (
+        resolved_fallback_state_file is not None
+        and resolved_fallback_state_file != state_file
+    ):
         try:
-            record_alert(fallback_state_file, now)
+            record_alert(resolved_fallback_state_file, now)
         except Exception:
             logger.exception("飞书告警已发送，但记录备用告警冷却时间失败")
     return True
