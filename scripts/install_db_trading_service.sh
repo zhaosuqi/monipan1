@@ -52,6 +52,18 @@ validate_safe_absolute_path() {
     fi
 }
 
+validate_installer_identity() {
+    local current_user="$1"
+    local service_user="$2"
+    local effective_uid="$3"
+
+    if [[ "$current_user" != "$service_user" ]] && (( effective_uid != 0 )); then
+        echo "错误: 非 root 用户不能为其他服务用户安装" >&2
+        echo "请以 $service_user 用户运行，或使用 root 运行" >&2
+        return 1
+    fi
+}
+
 usage() {
     echo "用法: $0 [service-user] [--user USER] [--python ABSOLUTE_PATH]" >&2
 }
@@ -83,7 +95,14 @@ while (( $# > 0 )); do
                 usage
                 exit 2
             fi
-            POSITIONAL_USER="${1:-}"
+            if [[ -n "$POSITIONAL_USER" && $# -eq 1 ]]; then
+                echo "错误: -- 后的用户不能覆盖已有位置 service-user" >&2
+                usage
+                exit 2
+            fi
+            if (( $# == 1 )); then
+                POSITIONAL_USER="$1"
+            fi
             shift "$#"
             ;;
         -*)
@@ -108,9 +127,6 @@ if [[ -n "$SERVICE_USER_OPTION" && -n "$POSITIONAL_USER" ]]; then
     exit 2
 fi
 
-validate_systemd_version
-resolve_systemd_analyze
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE="$PROJECT_ROOT/deploy/systemd/db-driven-trading.service.in"
@@ -118,10 +134,15 @@ NOTIFIER="$PROJECT_ROOT/scripts/notify_db_trading_failure.py"
 ENV_FILE="$PROJECT_ROOT/.env"
 UNIT_PATH="/etc/systemd/system/db-driven-trading.service"
 CURRENT_USER="$(id -un)"
+INSTALLER_EUID="$EUID"
 SERVICE_USER="${SERVICE_USER_OPTION:-${POSITIONAL_USER:-${SUDO_USER:-$CURRENT_USER}}}"
 
 validate_safe_service_user "$SERVICE_USER"
 validate_safe_absolute_path "PROJECT_ROOT" "$PROJECT_ROOT"
+validate_installer_identity "$CURRENT_USER" "$SERVICE_USER" "$INSTALLER_EUID"
+
+validate_systemd_version
+resolve_systemd_analyze
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     echo "错误: 用户不存在: $SERVICE_USER" >&2
@@ -187,7 +208,7 @@ fi
 probe_python_dependencies() {
     if [[ "$CURRENT_USER" == "$SERVICE_USER" ]]; then
         (cd "$PROJECT_ROOT" && "$PYTHON_BIN" -c 'import data.db_driven_trading')
-    elif (( EUID == 0 )); then
+    elif (( INSTALLER_EUID == 0 )); then
         local runuser_bin
         runuser_bin="$(command -v runuser)"
         if ! [[ "$runuser_bin" == /* && -x "$runuser_bin" ]]; then
@@ -213,7 +234,7 @@ fi
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/db-driven-trading.XXXXXX")"
 TEMP_UNIT="$TEMP_DIR/db-driven-trading.service"
-trap 'rm -f "$TEMP_UNIT"; rmdir "$TEMP_DIR"' EXIT
+trap 'status=$?; rm -f "$TEMP_UNIT"; rmdir "$TEMP_DIR"; exit "$status"' EXIT
 
 "$PYTHON_BIN" - "$TEMPLATE" "$TEMP_UNIT" "$SERVICE_USER" "$PROJECT_ROOT" "$PYTHON_BIN" <<'PY'
 import sys
@@ -246,7 +267,7 @@ if ! "$SYSTEMD_ANALYZE_BIN" verify "$TEMP_UNIT"; then
     exit 1
 fi
 
-if (( EUID == 0 )); then
+if (( INSTALLER_EUID == 0 )); then
     SUDO=()
 else
     SUDO=(sudo)
@@ -256,10 +277,18 @@ else
     fi
 fi
 
-"${SUDO[@]}" install -m 0644 "$TEMP_UNIT" "$UNIT_PATH"
-"${SUDO[@]}" systemctl daemon-reload
-"${SUDO[@]}" systemctl enable db-driven-trading.service
-"${SUDO[@]}" systemctl restart db-driven-trading.service
+run_privileged() {
+    if (( INSTALLER_EUID == 0 )); then
+        "$@"
+    else
+        "${SUDO[@]}" "$@"
+    fi
+}
+
+run_privileged install -m 0644 "$TEMP_UNIT" "$UNIT_PATH"
+run_privileged systemctl daemon-reload
+run_privileged systemctl enable db-driven-trading.service
+run_privileged systemctl restart db-driven-trading.service
 
 echo "db-driven-trading.service 已安装并重启。"
 echo "查看状态: systemctl status db-driven-trading.service"

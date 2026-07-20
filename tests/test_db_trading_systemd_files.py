@@ -35,6 +35,7 @@ def run_installer_with_stubbed_systemd(
     env_owner: str = "trader",
     arguments: Optional[list[str]] = None,
     current_user: str = "trader",
+    effective_uid: Optional[int] = None,
     python_probe_exit: int = 0,
     systemd_analyze_exit: int = 0,
     systemd_analyze_present: bool = True,
@@ -46,7 +47,15 @@ def run_installer_with_stubbed_systemd(
     template_dir = project_root / "deploy" / "systemd"
     scripts_dir.mkdir(parents=True)
     template_dir.mkdir(parents=True)
-    shutil.copy2(INSTALLER, scripts_dir / INSTALLER.name)
+    installer_copy = scripts_dir / INSTALLER.name
+    shutil.copy2(INSTALLER, installer_copy)
+    if effective_uid is not None:
+        installer_content = installer_copy.read_text(encoding="utf-8")
+        installer_content = installer_content.replace(
+            'INSTALLER_EUID="$EUID"',
+            f"INSTALLER_EUID={effective_uid}",
+        )
+        installer_copy.write_text(installer_content, encoding="utf-8")
     shutil.copy2(SERVICE_TEMPLATE, template_dir / SERVICE_TEMPLATE.name)
     (scripts_dir / "notify_db_trading_failure.py").write_text("", encoding="utf-8")
     if env_present:
@@ -141,7 +150,7 @@ printf "%s %s\\n" "${0##*/}" "$*" >> "$CALL_LOG"
         for argument in (arguments or [])
     ]
     result = subprocess.run(
-        ["/bin/bash", str(scripts_dir / INSTALLER.name), *resolved_arguments],
+        ["/bin/bash", str(installer_copy), *resolved_arguments],
         cwd=project_root,
         env=env,
         capture_output=True,
@@ -386,6 +395,7 @@ def test_installer_requires_explicit_python_for_different_service_user(tmp_path)
         "systemd 255 (255.4)",
         arguments=["--user", "trader"],
         current_user="root",
+        effective_uid=0,
     )
 
     assert result.returncode != 0
@@ -407,16 +417,66 @@ def test_installer_import_probe_failure_stops_before_privileged_install(tmp_path
 
 
 def test_installer_runs_probe_through_user_switch_for_different_user(tmp_path):
-    result, _ = run_installer_with_stubbed_systemd(
+    result, privileged_calls = run_installer_with_stubbed_systemd(
         tmp_path,
         "systemd 255 (255.4)",
         arguments=["--user", "trader", "--python", "@PYTHON@"],
         current_user="root",
+        effective_uid=0,
     )
 
     assert result.returncode == 0, result.stderr
     probe = (tmp_path / "python-probe.log").read_text(encoding="utf-8")
-    assert re.search(r"(?:runuser|sudo) -u trader -- .*python -c import data.db_driven_trading", probe)
+    assert re.search(r"runuser -u trader -- .*python -c import data.db_driven_trading", probe)
+    assert "install -m 0644" in privileged_calls
+    assert "sudo install" not in privileged_calls
+
+
+def test_installer_rejects_non_root_cross_user_before_python_or_privileged_actions(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd 255 (255.4)",
+        arguments=["--user", "trader", "--python", "/missing/python"],
+        current_user="deployer",
+        effective_uid=1000,
+    )
+
+    assert result.returncode != 0
+    assert "错误: 非 root 用户不能为其他服务用户安装" in result.stderr
+    assert "请以 trader 用户运行，或使用 root 运行" in result.stderr
+    assert "Python 必须是绝对可执行路径" not in result.stderr
+    assert privileged_calls == ""
+    assert not (tmp_path / "python-probe.log").exists()
+    assert not (tmp_path / "systemd-analyze.log").exists()
+
+
+def test_installer_accepts_service_user_identity_without_user_switch(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd 255 (255.4)",
+        arguments=["--user", "trader", "--python", "@PYTHON@"],
+        current_user="trader",
+        effective_uid=1000,
+    )
+
+    assert result.returncode == 0, result.stderr
+    probe = (tmp_path / "python-probe.log").read_text(encoding="utf-8")
+    assert probe.startswith(str(tmp_path / "conda-env" / "bin" / "python"))
+    assert "runuser" not in probe
+    assert "sudo -u" not in probe
+    assert "sudo install -m 0644" in privileged_calls
+
+
+def test_installer_rejects_positional_user_overwrite_after_double_dash(tmp_path):
+    result, privileged_calls = run_installer_with_stubbed_systemd(
+        tmp_path,
+        "systemd 255 (255.4)",
+        arguments=["trader", "--", "another"],
+    )
+
+    assert result.returncode == 2
+    assert "错误: -- 后的用户不能覆盖已有位置 service-user" in result.stderr
+    assert privileged_calls == ""
 
 
 @pytest.mark.parametrize(
@@ -554,12 +614,14 @@ def test_installer_validates_inputs_and_renders_all_placeholders_safely():
 def test_installer_uses_sudo_array_only_for_non_root_execution():
     content = read_installer()
 
-    assert re.search(r'if \(\( EUID == 0 \)\); then\s+SUDO=\(\)', content)
+    assert 'INSTALLER_EUID="$EUID"' in content
+    assert re.search(r'if \(\( INSTALLER_EUID == 0 \)\); then\s+SUDO=\(\)', content)
     assert re.search(r'else\s+SUDO=\(sudo\)', content)
-    assert '"${SUDO[@]}" install -m 0644' in content
-    assert '"${SUDO[@]}" systemctl daemon-reload' in content
-    assert '"${SUDO[@]}" systemctl enable db-driven-trading.service' in content
-    assert '"${SUDO[@]}" systemctl restart db-driven-trading.service' in content
+    assert '"${SUDO[@]}" "$@"' in content
+    assert 'run_privileged install -m 0644' in content
+    assert 'run_privileged systemctl daemon-reload' in content
+    assert 'run_privileged systemctl enable db-driven-trading.service' in content
+    assert 'run_privileged systemctl restart db-driven-trading.service' in content
 
 
 def test_installer_installs_expected_unit_and_prints_diagnostics():
