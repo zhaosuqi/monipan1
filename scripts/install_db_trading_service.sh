@@ -14,7 +14,7 @@ validate_systemd_version() {
     fi
 
     first_line="${version_output%%$'\n'*}"
-    if [[ ! "$first_line" =~ ([0-9]+) ]]; then
+    if [[ ! "$first_line" =~ ^systemd\ ([0-9]+) ]]; then
         echo "错误: 无法解析 systemd 版本: $first_line" >&2
         return 1
     fi
@@ -26,28 +26,120 @@ validate_systemd_version() {
     fi
 }
 
-if (( $# > 1 )); then
-    echo "用法: $0 [service-user]" >&2
+resolve_systemd_analyze() {
+    if ! SYSTEMD_ANALYZE_BIN="$(command -v systemd-analyze)" ||
+        ! [[ "$SYSTEMD_ANALYZE_BIN" == /* && -x "$SYSTEMD_ANALYZE_BIN" ]]; then
+        echo "错误: 未找到 systemd-analyze" >&2
+        return 1
+    fi
+}
+
+validate_safe_service_user() {
+    if [[ ! "$1" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+        echo "错误: SERVICE_USER 包含不安全字符" >&2
+        return 1
+    fi
+}
+
+validate_safe_absolute_path() {
+    local label="$1"
+    local value="$2"
+
+    if [[ ! "$value" =~ ^/[A-Za-z0-9._/:+-]+$ ]] ||
+        [[ "$value" == *"/../"* || "$value" == */.. || "$value" == *"/./"* ]]; then
+        echo "错误: $label 包含不安全字符或路径片段" >&2
+        return 1
+    fi
+}
+
+usage() {
+    echo "用法: $0 [service-user] [--user USER] [--python ABSOLUTE_PATH]" >&2
+}
+
+SERVICE_USER_OPTION=""
+PYTHON_OPTION=""
+POSITIONAL_USER=""
+while (( $# > 0 )); do
+    case "$1" in
+        --user)
+            if (( $# < 2 )) || [[ -z "$2" ]]; then
+                usage
+                exit 2
+            fi
+            SERVICE_USER_OPTION="$2"
+            shift 2
+            ;;
+        --python)
+            if (( $# < 2 )) || [[ -z "$2" ]]; then
+                usage
+                exit 2
+            fi
+            PYTHON_OPTION="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            if (( $# > 1 )); then
+                usage
+                exit 2
+            fi
+            POSITIONAL_USER="${1:-}"
+            shift "$#"
+            ;;
+        -*)
+            echo "错误: 未知参数: $1" >&2
+            usage
+            exit 2
+            ;;
+        *)
+            if [[ -n "$POSITIONAL_USER" ]]; then
+                usage
+                exit 2
+            fi
+            POSITIONAL_USER="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -n "$SERVICE_USER_OPTION" && -n "$POSITIONAL_USER" ]]; then
+    echo "错误: 不能同时使用位置 service-user 和 --user" >&2
+    usage
     exit 2
 fi
 
 validate_systemd_version
+resolve_systemd_analyze
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE="$PROJECT_ROOT/deploy/systemd/db-driven-trading.service.in"
 NOTIFIER="$PROJECT_ROOT/scripts/notify_db_trading_failure.py"
+ENV_FILE="$PROJECT_ROOT/.env"
 UNIT_PATH="/etc/systemd/system/db-driven-trading.service"
-SERVICE_USER="${1:-${SUDO_USER:-$(id -un)}}"
+CURRENT_USER="$(id -un)"
+SERVICE_USER="${SERVICE_USER_OPTION:-${POSITIONAL_USER:-${SUDO_USER:-$CURRENT_USER}}}"
+
+validate_safe_service_user "$SERVICE_USER"
+validate_safe_absolute_path "PROJECT_ROOT" "$PROJECT_ROOT"
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     echo "错误: 用户不存在: $SERVICE_USER" >&2
     exit 1
 fi
 
-PYTHON_BIN="$(command -v python3)"
+if [[ -n "$PYTHON_OPTION" ]]; then
+    PYTHON_BIN="$PYTHON_OPTION"
+else
+    if [[ "$CURRENT_USER" != "$SERVICE_USER" ]]; then
+        echo "错误: 当前用户与服务用户不同时必须使用 --python 指定服务用户的 Python" >&2
+        exit 1
+    fi
+    PYTHON_BIN="$(command -v python3)"
+fi
+validate_safe_absolute_path "PYTHON_BIN" "$PYTHON_BIN"
 if ! [[ "$PYTHON_BIN" == /* && -x "$PYTHON_BIN" ]]; then
-    echo "错误: python3 必须解析为绝对可执行路径" >&2
+    echo "错误: Python 必须是绝对可执行路径: $PYTHON_BIN" >&2
     exit 1
 fi
 
@@ -59,9 +151,69 @@ if ! [[ -f "$NOTIFIER" ]]; then
     echo "错误: 找不到异常退出告警脚本: $NOTIFIER" >&2
     exit 1
 fi
+if ! [[ -f "$ENV_FILE" ]]; then
+    echo "错误: 找不到必需的环境变量文件: $ENV_FILE" >&2
+    exit 1
+fi
 
-TEMP_UNIT="$(mktemp "${TMPDIR:-/tmp}/db-driven-trading.service.XXXXXX")"
-trap 'rm -f "$TEMP_UNIT"' EXIT
+if ! STAT_BIN="$(command -v stat)" ||
+    ! [[ "$STAT_BIN" == /* && -x "$STAT_BIN" ]]; then
+    echo "错误: 未找到 Linux stat 命令" >&2
+    exit 1
+fi
+if ! ENV_METADATA="$("$STAT_BIN" -c '%U %a' -- "$ENV_FILE")"; then
+    echo "错误: 无法读取 .env 的所有者和权限" >&2
+    exit 1
+fi
+read -r ENV_OWNER ENV_MODE ENV_EXTRA <<< "$ENV_METADATA"
+ENV_REMEDIATION="修复: sudo chown $SERVICE_USER '$ENV_FILE' && sudo chmod 600 '$ENV_FILE'"
+if [[ -n "${ENV_EXTRA:-}" || ! "$ENV_MODE" =~ ^[0-7]{3,4}$ ]]; then
+    echo "错误: 无法解析 .env 权限" >&2
+    echo "$ENV_REMEDIATION" >&2
+    exit 1
+fi
+if [[ "$ENV_OWNER" != "$SERVICE_USER" ]]; then
+    echo "错误: .env 所有者必须是 ${SERVICE_USER}，当前为 $ENV_OWNER" >&2
+    echo "$ENV_REMEDIATION" >&2
+    exit 1
+fi
+ENV_MODE_VALUE=$((8#$ENV_MODE))
+if (( ENV_MODE_VALUE != 0400 && ENV_MODE_VALUE != 0600 )); then
+    echo "错误: .env 权限必须为 0400 或 0600，当前为 $ENV_MODE" >&2
+    echo "$ENV_REMEDIATION" >&2
+    exit 1
+fi
+
+probe_python_dependencies() {
+    if [[ "$CURRENT_USER" == "$SERVICE_USER" ]]; then
+        (cd "$PROJECT_ROOT" && "$PYTHON_BIN" -c 'import data.db_driven_trading')
+    elif (( EUID == 0 )); then
+        local runuser_bin
+        runuser_bin="$(command -v runuser)"
+        if ! [[ "$runuser_bin" == /* && -x "$runuser_bin" ]]; then
+            echo "错误: root 为其他用户执行检查时需要 runuser" >&2
+            return 1
+        fi
+        (cd "$PROJECT_ROOT" && "$runuser_bin" -u "$SERVICE_USER" -- "$PYTHON_BIN" -c 'import data.db_driven_trading')
+    else
+        local sudo_bin
+        sudo_bin="$(command -v sudo)"
+        if ! [[ "$sudo_bin" == /* && -x "$sudo_bin" ]]; then
+            echo "错误: 为其他用户执行检查时需要 sudo" >&2
+            return 1
+        fi
+        (cd "$PROJECT_ROOT" && "$sudo_bin" -u "$SERVICE_USER" -- "$PYTHON_BIN" -c 'import data.db_driven_trading')
+    fi
+}
+
+if ! probe_python_dependencies; then
+    echo "错误: Python 依赖导入检查失败: import data.db_driven_trading" >&2
+    exit 1
+fi
+
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/db-driven-trading.XXXXXX")"
+TEMP_UNIT="$TEMP_DIR/db-driven-trading.service"
+trap 'rm -f "$TEMP_UNIT"; rmdir "$TEMP_DIR"' EXIT
 
 "$PYTHON_BIN" - "$TEMPLATE" "$TEMP_UNIT" "$SERVICE_USER" "$PROJECT_ROOT" "$PYTHON_BIN" <<'PY'
 import sys
@@ -88,6 +240,11 @@ if any(placeholder in rendered for placeholder in replacements):
 
 Path(output_path).write_text(rendered, encoding="utf-8")
 PY
+
+if ! "$SYSTEMD_ANALYZE_BIN" verify "$TEMP_UNIT"; then
+    echo "错误: systemd unit 验证失败，未安装或重启服务" >&2
+    exit 1
+fi
 
 if (( EUID == 0 )); then
     SUDO=()

@@ -9,7 +9,7 @@ StartLimitBurst=5
 Type=simple
 User=@SERVICE_USER@
 WorkingDirectory=@PROJECT_ROOT@
-EnvironmentFile=-@PROJECT_ROOT@/.env
+EnvironmentFile=@PROJECT_ROOT@/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=@PYTHON_BIN@ @PROJECT_ROOT@/data/db_driven_trading.py --live --silent-startup
 ExecStopPost=@PYTHON_BIN@ @PROJECT_ROOT@/scripts/notify_db_trading_failure.py --unit db-driven-trading.service --result ${SERVICE_RESULT} --exit-code ${EXIT_CODE} --exit-status ${EXIT_STATUS} --state-file /run/db-driven-trading/failure-alert
