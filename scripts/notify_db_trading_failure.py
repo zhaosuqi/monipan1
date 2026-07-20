@@ -2,26 +2,36 @@
 """Send a rate-limited Feishu alert after an abnormal systemd service exit."""
 
 import argparse
+import logging
 import math
 import os
+import re
 import socket
+import stat
 import sys
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.logger import get_logger
-from interaction_module.feishu_bot import FeishuBot
-
-
-logger = get_logger("scripts.notify_db_trading_failure")
+logger = logging.getLogger("scripts.notify_db_trading_failure")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 TZ_EAST8 = timezone(timedelta(hours=8))
 
 
@@ -39,13 +49,18 @@ def should_send_alert(
     """Return whether the alert cooldown permits a new notification."""
     try:
         last_sent = float(state_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return True
+    except OSError:
+        logger.exception("读取告警冷却状态失败，停止发送以避免重复告警: %s", state_file)
+        return False
+    except ValueError:
         return True
 
     if not math.isfinite(last_sent):
         return True
     if last_sent > now:
-        return False
+        return last_sent - now > cooldown_seconds
     return now - last_sent >= cooldown_seconds
 
 
@@ -71,6 +86,43 @@ def record_alert(state_file: Path, now: float) -> None:
             temporary_path.unlink()
 
 
+def resolve_fallback_state_file(
+    unit: str,
+    *,
+    uid: Optional[int] = None,
+    runtime_root: Path = Path("/run/user"),
+    temp_root: Optional[Path] = None,
+) -> Path:
+    """Return a deterministic, user-owned fallback cooldown state path."""
+    resolved_uid = os.getuid() if uid is None else uid
+    safe_unit = re.sub(r"[^A-Za-z0-9_.-]", "_", unit) or "unknown-service"
+    state_name = f".{safe_unit}.failure-alert"
+    runtime_directory = Path(runtime_root) / str(resolved_uid)
+
+    try:
+        runtime_info = runtime_directory.stat()
+    except OSError:
+        runtime_info = None
+    if (
+        runtime_info is not None
+        and stat.S_ISDIR(runtime_info.st_mode)
+        and runtime_info.st_uid == resolved_uid
+        and os.access(runtime_directory, os.W_OK | os.X_OK)
+    ):
+        return runtime_directory / state_name
+
+    temporary_root = Path(temp_root) if temp_root is not None else Path(
+        tempfile.gettempdir()
+    )
+    private_directory = temporary_root / f"db-trading-failure-alert-{resolved_uid}"
+    private_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_info = private_directory.lstat()
+    if not stat.S_ISDIR(private_info.st_mode) or private_info.st_uid != resolved_uid:
+        raise PermissionError(f"不安全的备用告警状态目录: {private_directory}")
+    private_directory.chmod(0o700)
+    return private_directory / state_name
+
+
 def build_alert_message(
     unit: str,
     result: str,
@@ -92,6 +144,13 @@ def build_alert_message(
     )
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    return parsed
+
+
 def notify_failure(
     unit: str,
     result: Optional[str],
@@ -100,7 +159,8 @@ def notify_failure(
     state_file: Path,
     cooldown_seconds: int = 600,
     *,
-    bot: Optional[FeishuBot] = None,
+    fallback_state_file: Optional[Path] = None,
+    bot: Optional[Any] = None,
     clock: Callable[[], float] = time.time,
     hostname: Callable[[], str] = socket.gethostname,
 ) -> bool:
@@ -119,6 +179,27 @@ def notify_failure(
         )
         return False
 
+    try:
+        fallback_state_file = (
+            Path(fallback_state_file)
+            if fallback_state_file is not None
+            else resolve_fallback_state_file(unit)
+        )
+    except Exception:
+        logger.exception("无法准备备用告警冷却状态，停止发送以避免重复告警")
+        return False
+
+    if (
+        fallback_state_file != state_file
+        and not should_send_alert(fallback_state_file, now, cooldown_seconds)
+    ):
+        logger.warning(
+            "备用异常退出告警处于冷却期，跳过发送: unit=%s result=%s",
+            unit,
+            result,
+        )
+        return False
+
     timestamp = datetime.fromtimestamp(now, TZ_EAST8).strftime(
         "%Y-%m-%d %H:%M:%S %z"
     )
@@ -131,7 +212,7 @@ def notify_failure(
         timestamp=timestamp,
     )
 
-    alert_bot = bot if bot is not None else FeishuBot()
+    alert_bot = bot if bot is not None else _create_feishu_bot()
     try:
         sent = alert_bot.send_message(message)
     except Exception:
@@ -145,7 +226,12 @@ def notify_failure(
     try:
         record_alert(state_file, now)
     except Exception:
-        logger.exception("飞书告警已发送，但记录告警冷却时间失败")
+        logger.exception("飞书告警已发送，但记录主告警冷却时间失败")
+    if fallback_state_file != state_file:
+        try:
+            record_alert(fallback_state_file, now)
+        except Exception:
+            logger.exception("飞书告警已发送，但记录备用告警冷却时间失败")
     return True
 
 
@@ -158,11 +244,17 @@ def parse_args(argv=None):
     parser.add_argument("--state-file", required=True, type=Path, help="告警冷却状态文件")
     parser.add_argument(
         "--cooldown-seconds",
-        type=int,
+        type=_positive_int,
         default=600,
         help="同类告警冷却秒数，默认 600",
     )
     return parser.parse_args(argv)
+
+
+def _create_feishu_bot():
+    from interaction_module.feishu_bot import FeishuBot
+
+    return FeishuBot()
 
 
 def main(argv=None) -> int:
@@ -175,7 +267,7 @@ def main(argv=None) -> int:
             exit_status=args.exit_status,
             state_file=args.state_file,
             cooldown_seconds=args.cooldown_seconds,
-            bot=FeishuBot(),
+            bot=_create_feishu_bot(),
         )
     except Exception:
         logger.exception("交易服务退出告警程序发生未预期异常")
