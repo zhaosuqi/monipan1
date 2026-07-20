@@ -293,10 +293,13 @@ class ConfigHotReloader:
             return "(无)"
         return str(value)
 
-    def report_all_params(self):
+    def report_all_params(self, notify_feishu: bool = True):
         """
         一次性输出所有当前参数到日志和飞书。
         适合在系统启动后首次运行信号判断时调用。
+
+        Args:
+            notify_feishu: 是否同时发送飞书全量参数报告
         """
         params = self.last_params
         if not params:
@@ -311,7 +314,7 @@ class ConfigHotReloader:
         self.logger.info("=" * 55)
 
         # 发送飞书
-        if not self.feishu_bot:
+        if not notify_feishu or not self.feishu_bot:
             return
 
         try:

@@ -73,15 +73,17 @@ BALANCE_SYNC_INTERVAL = 60
 class DBDrivenTrader:
     """数据驱动交易器"""
     
-    def __init__(self, use_testnet: bool = True):
+    def __init__(self, use_testnet: bool = True, silent_startup: bool = False):
         """
         初始化交易器
         
         Args:
             use_testnet: 是否使用测试网
+            silent_startup: 是否跳过启动阶段的飞书通知
         """
         self.logger = logger
         self.use_testnet = use_testnet
+        self.silent_startup = silent_startup
         
         # 数据库引擎
         self.engine = self._get_engine()
@@ -120,7 +122,14 @@ class DBDrivenTrader:
         self.logger.info(f"交易对: {config.SYMBOL}")
         self.logger.info("=" * 60)
 
-        # 发送系统启动通知
+        self._send_startup_notifications()
+
+    def _send_startup_notifications(self):
+        """发送仅在系统启动阶段触发的飞书通知。"""
+        if self.silent_startup:
+            self.logger.info("静默启动：已跳过启动阶段飞书通知")
+            return
+
         try:
             mode_str = "测试网" if self.use_testnet else "实盘"
             exchange_type = os.environ.get('EXCHANGE_TYPE', 'binance_testnet' if self.use_testnet else 'binance_live')
@@ -142,6 +151,12 @@ class DBDrivenTrader:
         except Exception as e:
             self.logger.warning(f"启动时发送交易历史报告失败: {e}", exc_info=True)
         self.logger.info("=" * 60)
+
+    def _report_startup_params(self):
+        """记录首次全量参数，并按启动模式决定是否同步到飞书。"""
+        self.config_reloader.report_all_params(
+            notify_feishu=not self.silent_startup
+        )
     
     def _get_engine(self):
         """获取数据库引擎"""
@@ -378,7 +393,7 @@ class DBDrivenTrader:
         if not self._params_reported:
             self._params_reported = True
             try:
-                self.config_reloader.report_all_params()
+                self._report_startup_params()
             except Exception as e:
                 self.logger.warning(f"输出启动参数报告失败: {e}")
 
@@ -496,8 +511,8 @@ class DBDrivenTrader:
         self.logger.info(f"最终余额: {self.current_balance:.6f} BTC")
 
 
-def main():
-    """主函数"""
+def parse_args(argv=None):
+    """解析命令行参数。"""
     parser = argparse.ArgumentParser(description="数据驱动模拟盘交易系统")
     parser.add_argument(
         "--live",
@@ -510,16 +525,33 @@ def main():
         default=1000,
         help="预加载数据条数（默认1000）"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--silent-startup",
+        action="store_true",
+        help="静默启动，不发送启动阶段飞书通知"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """主函数"""
+    args = parse_args(argv)
     
     global PRELOAD_COUNT
     PRELOAD_COUNT = args.preload
     
     # 创建交易器
-    trader = DBDrivenTrader(use_testnet=not args.live)
+    trader = DBDrivenTrader(
+        use_testnet=not args.live,
+        silent_startup=args.silent_startup,
+    )
     
     # 运行
-    trader.run()
+    try:
+        trader.run()
+    except Exception:
+        logger.exception("交易系统异常退出")
+        raise
 
 
 if __name__ == "__main__":
