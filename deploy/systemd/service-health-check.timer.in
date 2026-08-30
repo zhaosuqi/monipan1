@@ -1,0 +1,10 @@
+[Unit]
+Description=Run services health check every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

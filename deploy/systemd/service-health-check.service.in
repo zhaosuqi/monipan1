@@ -1,0 +1,18 @@
+[Unit]
+Description=BTCUSD perpetual services health check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON_BIN@ @PROJECT_ROOT@/scripts/service_health_check.py
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=service-health-check

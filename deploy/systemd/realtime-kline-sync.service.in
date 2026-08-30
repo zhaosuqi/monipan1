@@ -1,0 +1,31 @@
+[Unit]
+Description=BTCUSD perpetual realtime kline sync service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON_BIN@ @PROJECT_ROOT@/data/realtime_kline_sync.py
+ExecStopPost=@PYTHON_BIN@ @PROJECT_ROOT@/scripts/notify_db_trading_failure.py --unit realtime-kline-sync.service --result ${SERVICE_RESULT} --exit-code ${EXIT_CODE} --exit-status ${EXIT_STATUS} --state-file /run/realtime-kline-sync/failure-alert
+RuntimeDirectory=realtime-kline-sync
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=realtime-kline-sync
+
+[Install]
+WantedBy=multi-user.target

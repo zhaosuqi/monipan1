@@ -1,0 +1,31 @@
+[Unit]
+Description=BTCUSD perpetual kline web viewer service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON_BIN@ @PROJECT_ROOT@/web/kline_viewer.py --port @WEB_PORT@
+ExecStopPost=@PYTHON_BIN@ @PROJECT_ROOT@/scripts/notify_db_trading_failure.py --unit kline-web.service --result ${SERVICE_RESULT} --exit-code ${EXIT_CODE} --exit-status ${EXIT_STATUS} --state-file /run/kline-web/failure-alert
+RuntimeDirectory=kline-web
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kline-web
+
+[Install]
+WantedBy=multi-user.target
