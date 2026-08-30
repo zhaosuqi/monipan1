@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -94,6 +94,9 @@ class Trade:
 TRADE_HISTORY_REPORT_COUNT = 10
 TRADE_HISTORY_FETCH_LIMIT = 100
 TRADE_HISTORY_MAX_FETCH_PAGES = 20
+# 交易报告查询的回看窗口（天）。币安 userTrades 不传 startTime 时默认只返回最近 7 天，
+# 超过 7 天无交易会查不到历史，导致报告被跳过，因此显式指定回看窗口。
+TRADE_HISTORY_LOOKBACK_DAYS = 30
 
 
 class TradeEngine:
@@ -762,11 +765,18 @@ class TradeEngine:
         seen_keys = set()
         end_time = None
         previous_earliest_ms = None
+        start_time = datetime.now() - timedelta(days=TRADE_HISTORY_LOOKBACK_DAYS)
+        start_time_ms = int(start_time.timestamp() * 1000)
+        self.logger.info(
+            f"   查询窗口: {start_time.strftime('%Y-%m-%d %H:%M')} 至今 "
+            f"(回看 {TRADE_HISTORY_LOOKBACK_DAYS} 天)"
+        )
 
         for page_index in range(TRADE_HISTORY_MAX_FETCH_PAGES):
             batch = self.exchange.get_user_trades(
                 config.SYMBOL,
                 limit=TRADE_HISTORY_FETCH_LIMIT,
+                start_time=start_time,
                 end_time=end_time,
                 raise_on_error=True
             )
@@ -809,6 +819,8 @@ class TradeEngine:
                 break
 
             previous_earliest_ms = earliest_ms
+            if earliest_ms <= start_time_ms:
+                break
             end_time = datetime.fromtimestamp((earliest_ms - 1) / 1000)
 
         return self._build_trade_history_report_trades(all_trades, target)
@@ -838,7 +850,21 @@ class TradeEngine:
             self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
 
         if not trade_list:
-            self.logger.info("   暂无交易记录，跳过报告发送")
+            self.logger.info("   暂无交易记录，发送无交易心跳通知")
+            try:
+                account_info = self.exchange.get_account_info(self.display_asset)
+                total_balance = account_info.total_wallet_balance
+            except Exception as e:
+                self.logger.warning(f"   获取交易所余额失败，余额显示为0: {e}")
+                total_balance = 0.0
+            try:
+                result = self.feishu_bot.send_no_trade_notification(
+                    total_balance_btc=total_balance
+                )
+                self.last_trade_history_report = pd.Timestamp.utcnow()
+                self.logger.info(f"📊 无交易心跳通知发送结果: {result}")
+            except Exception as e:
+                self.logger.warning(f"发送无交易心跳通知失败: {e}", exc_info=True)
             self.logger.info("=" * 60)
             return
 
@@ -961,13 +987,13 @@ class TradeEngine:
             return False
 
         # 检查止损冷却 - 与macd_refactor.py保持一致
-        if self.stoploss_time is not None:
-            time_since_stoploss = (ts - self.stoploss_time).total_seconds() / 60
-            if time_since_stoploss < config.STOP_LOSS_HOLD_TIME and side == self.stoploss_side:
-                msg = (f"❌❌❌ 开仓失败: 跳过开仓 - 距离{side}止损仅{time_since_stoploss:.1f}分钟 "
-                       f"(冷却期{config.STOP_LOSS_HOLD_TIME}分钟)")
-                self.logger.info(msg)
-                return False
+        # if self.stoploss_time is not None:
+        #     time_since_stoploss = (ts - self.stoploss_time).total_seconds() / 60
+        #     if time_since_stoploss < config.STOP_LOSS_HOLD_TIME and side == self.stoploss_side:
+        #         msg = (f"❌❌❌ 开仓失败: 跳过开仓 - 距离{side}止损仅{time_since_stoploss:.1f}分钟 "
+        #                f"(冷却期{config.STOP_LOSS_HOLD_TIME}分钟)")
+        #         self.logger.info(msg)
+        #         return False
 
         # 检查价格是否有效
         if not price or price <= 0:

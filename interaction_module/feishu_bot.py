@@ -1194,3 +1194,56 @@ class FeishuBot:
         }
 
         return self._send_rich_card(card)
+
+    def send_no_trade_notification(self, total_balance_btc: float = 0.0) -> bool:
+        """
+        发送无交易心跳通知
+
+        用于交易历史报告周期内没有任何成交的场景，避免静默跳过
+        导致用户误以为服务异常。
+
+        Args:
+            total_balance_btc: 当前总余额(基础币种)
+        """
+        card = {
+            "header": {
+                "title": {
+                    "content": "📊 交易报告 - 本周期无交易 💤",
+                    "tag": "plain_text"
+                },
+                "template": "grey"
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "本报告周期内**无成交记录**。\n系统运行正常，策略未触发完整交易。"
+                    }
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**当前余额**\n{total_balance_btc:.6f} {self.display_asset}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**报告时间**\n{self._get_now_str()}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return self._send_rich_card(card)

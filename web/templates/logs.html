@@ -242,6 +242,16 @@
             return `<div class="log-line">${escapeHtml(line)}</div>`;
         }
 
+        // API请求包装：session 过期(401)时跳转登录页
+        async function apiFetch(url, options) {
+            const response = await fetch(url, options);
+            if (response.status === 401) {
+                window.location.href = '/login';
+                throw new Error('会话已过期，跳转登录页');
+            }
+            return response;
+        }
+
         async function loadLogs() {
             const btn = document.getElementById('refreshBtn');
             const container = document.getElementById('logContainer');
@@ -251,7 +261,7 @@
             btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 加载中...';
 
             try {
-                const response = await fetch('/api/logs');
+                const response = await apiFetch('/api/logs');
                 const data = await response.json();
 
                 if (data.success) {

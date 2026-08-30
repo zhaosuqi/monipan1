@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
-import random
+import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -51,7 +51,13 @@ def _load_signal_params() -> dict:
     return {k.lower(): getattr(config, k) for k in dir(config) if k.isupper()}
 
 app = Flask(__name__, template_folder='templates')
-app.config['SECRET_KEY'] = 'kline-viewer-secret-change-this-in-production'
+# SECRET_KEY 必须从环境变量读取；未配置时每次启动随机生成（重启后旧 session 失效）
+_flask_secret = os.environ.get('FLASK_SECRET_KEY', '').strip()
+if _flask_secret:
+    app.config['SECRET_KEY'] = _flask_secret
+else:
+    app.config['SECRET_KEY'] = secrets.token_hex(32)
+    logger.warning("未配置 FLASK_SECRET_KEY，已生成随机密钥；重启后所有 session 将失效，建议在 .env 中配置固定值")
 
 # 登录配置
 ALLOWED_PHONES = config.ALLOWED_PHONES  # 从配置读取白名单列表
@@ -68,20 +74,38 @@ SEND_CODE_INTERVAL = 180
 DB_PATH = config.HIST_DB_PATH
 
 
+def _check_session_valid() -> bool:
+    """检查 session 是否已登录且未过期"""
+    if 'logged_in' not in session:
+        return False
+    if 'login_time' in session:
+        login_time = datetime.fromisoformat(session['login_time'])
+        if datetime.now() - login_time > timedelta(seconds=SESSION_LIFETIME):
+            session.clear()
+            return False
+    return True
+
+
 def login_required(f):
-    """登录验证装饰器"""
+    """登录验证装饰器（页面用，未登录重定向到登录页）"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'logged_in' not in session:
+        if not _check_session_valid():
             return redirect(url_for('login_page'))
-        # 检查session是否过期
-        if 'login_time' in session:
-            login_time = datetime.fromisoformat(session['login_time'])
-            if datetime.now() - login_time > timedelta(seconds=SESSION_LIFETIME):
-                session.clear()
-                return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
+
+
+# 无需登录即可访问的端点（登录流程本身 + session 状态查询）
+_PUBLIC_ENDPOINTS = {'login_page', 'send_verification_code', 'api_login', 'api_session', 'static'}
+
+
+@app.before_request
+def _require_api_auth():
+    """所有 /api/* 端点默认要求登录（白名单除外），未登录返回 401 JSON"""
+    if request.path.startswith('/api/') and request.endpoint not in _PUBLIC_ENDPOINTS:
+        if not _check_session_valid():
+            return jsonify({'success': False, 'error': '未登录或会话已过期'}), 401
 
 
 @app.route('/login', methods=['GET'])
@@ -113,8 +137,8 @@ def send_verification_code():
                 'retry_after': remaining
             }), 429
 
-    # 生成6位随机验证码
-    code = ''.join([str(random.randint(0, 9)) for _ in range(6)])
+    # 生成6位随机验证码（使用密码学安全随机数）
+    code = f"{secrets.randbelow(1000000):06d}"
 
     # 存储验证码，2分钟过期
     expires = datetime.now() + timedelta(seconds=VERIFICATION_CODE_EXPIRY)
@@ -125,14 +149,17 @@ def send_verification_code():
     }
 
     # 通过飞书发送验证码（强制发送，不依赖 FEISHU_ENABLED 开关）
+    # 优先使用登录专用 webhook（FEISHU_WEBHOOK_LOGIN，可配置为小群/单人群避免验证码暴露在大群），
+    # 未配置时回退到通用 FEISHU_WEBHOOK
     message = f"【验证码】您的登录验证码是：{code}，有效期2分钟，请勿泄露给他人。"
 
     # 直接调用飞书 API 发送
     success = False
-    if config.FEISHU_WEBHOOK:
+    webhook = os.environ.get('FEISHU_WEBHOOK_LOGIN', '').strip() or config.FEISHU_WEBHOOK
+    if webhook:
         try:
             response = requests.post(
-                config.FEISHU_WEBHOOK,
+                webhook,
                 json={"msg_type": "text", "content": {"text": message}},
                 timeout=5
             )
@@ -273,7 +300,6 @@ def logs_page():
 
 
 @app.route('/api/logs')
-@login_required
 def api_logs():
     """获取日志内容API"""
     log_path = config.TRADING_LOG_PATH

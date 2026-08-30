@@ -908,10 +908,20 @@
             return price.toFixed(4);
         }
 
+        // API请求包装：session 过期(401)时跳转登录页
+        async function apiFetch(url, options) {
+            const response = await window.fetch(url, options);
+            if (response.status === 401) {
+                window.location.href = '/login';
+                throw new Error('会话已过期，跳转登录页');
+            }
+            return response;
+        }
+
         // 加载K线数据
         async function loadKlines() {
             try {
-                const response = await fetch(`/api/klines?table=${currentTable}&limit=1000`);
+                const response = await apiFetch(`/api/klines?table=${currentTable}&limit=1000`);
                 const result = await response.json();
 
                 if (result.success) {
@@ -1024,7 +1034,7 @@
         // 加载交易标记
         async function loadTradeMarkers() {
             try {
-                const response = await fetch('/api/trades?limit=200');
+                const response = await apiFetch('/api/trades?limit=200');
                 const result = await response.json();
 
                 if (result.success && result.data.length > 0) {
@@ -1191,7 +1201,7 @@
         // 加载订单数据
         async function loadOrders() {
             try {
-                const response = await fetch('/api/orders?limit=50');
+                const response = await apiFetch('/api/orders?limit=50');
                 const result = await response.json();
                 
                 const tbody = document.getElementById('orders-body');
@@ -1219,7 +1229,7 @@
         // 加载持仓数据
         async function loadPositions() {
             try {
-                const response = await fetch('/api/positions');
+                const response = await apiFetch('/api/positions');
                 const result = await response.json();
                 
                 const tbody = document.getElementById('positions-body');
@@ -1250,7 +1260,7 @@
         // 加载资金数据
         async function loadBalance() {
             try {
-                const response = await fetch('/api/balance');
+                const response = await apiFetch('/api/balance');
                 const result = await response.json();
                 
                 const tbody = document.getElementById('balance-body');
@@ -1276,7 +1286,7 @@
         // 加载事件数据
         async function loadEvents() {
             try {
-                const response = await fetch('/api/events?limit=50');
+                const response = await apiFetch('/api/events?limit=50');
                 const result = await response.json();
                 
                 const tbody = document.getElementById('events-body');
@@ -1320,7 +1330,7 @@
         // 加载交易数据到Tab面板（按订单维度）
         async function loadTradesForPanel() {
             try {
-                const response = await fetch('/api/trades?limit=50&view_mode=position');
+                const response = await apiFetch('/api/trades?limit=50&view_mode=position');
                 const result = await response.json();
 
                 const tbody = document.getElementById('trades-body');
