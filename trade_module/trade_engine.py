@@ -1590,12 +1590,22 @@ class TradeEngine:
             )
 
             # 记录平仓交易（trade_id 已在上方获取真实成交明细时取得）
+            # 将 reason 映射到数据库 CHECK 约束允许的 action 值
+            _reason_to_action = {
+                'take_profit_final': 'TP',
+                'stop_loss': 'SL',
+                'timeout_close': 'EOD_CLOSE',
+                'drawdown_close': 'CLOSE_RETREAT',
+                'decay_close': 'CLOSE_DECAY',
+                'manual_close': 'MANUAL_CLOSE',
+            }
+            _action = _reason_to_action.get(reason, 'CLOSE')
             trade_record = TradeRecord(
                 trace_id=pos.trace_id,
                 trade_id=trade_id,  # 使用真实成交ID
                 symbol=config.SYMBOL,
                 side=pos.side,
-                action=reason.upper() if reason else 'CLOSE',
+                action=_action,
                 entry_price=pos.entry_price,
                 exit_price=close_price,
                 contracts=pos.contracts,
@@ -1817,8 +1827,8 @@ class TradeEngine:
                 # ============================================================
                 self.logger.info(f"🎯 [最后级别止盈] 直接市价全平")
 
-                # 取消所有相关挂单
-                self._cancel_all_related_orders(pos)
+                # 注意: 不在此处取消挂单, 保留保护止损单作为兜底
+                # 取消操作延后到 _market_close_for_tp 成交成功后执行
 
                 # 市价平仓
                 return self._market_close_for_tp(pos, ts, close_price)
@@ -1944,6 +1954,13 @@ class TradeEngine:
                     fallback_price=order.avg_price if order.avg_price > 0 else price
                 )
                 self.logger.info(f"✅ 止盈市价单成交 @ {actual_price:.2f}")
+
+                # 平仓成交后再取消所有相关挂单(保护止损/止盈),
+                # 避免平仓失败时仓位裸露
+                try:
+                    self._cancel_all_related_orders(pos)
+                except Exception as cancel_err:
+                    self.logger.warning(f"⚠️ 平仓后取消挂单失败(不影响平仓结果): {cancel_err}")
 
                 # 计算盈亏
                 notional_usd = cn * pos.contracts
@@ -2214,8 +2231,8 @@ class TradeEngine:
         self.logger.info(f"当前价: {price:.2f}")
         self.logger.info("=" * 80)
 
-        # 取消所有相关挂单
-        self._cancel_all_related_orders(pos)
+        # 注意: 不在此处取消挂单, 保留保护止损单作为兜底
+        # 取消操作延后到 _market_close_position 成交成功后执行
 
         # 市价单平仓
         return self._market_close_position(pos, ts, price, reason='stop_loss')
@@ -2312,17 +2329,6 @@ class TradeEngine:
         )
 
         try:
-            # 先撤销可能冲突的同方向挂单
-            try:
-                open_orders = self.exchange.get_open_orders(config.SYMBOL)
-                if open_orders:
-                    for existing_order in open_orders:
-                        if existing_order.side.value == close_side:
-                            self.logger.info(f"🔕 [撤销冲突挂单] ID={existing_order.order_id}")
-                            self.exchange.cancel_order(config.SYMBOL, existing_order.order_id)
-            except Exception as e:
-                self.logger.warning(f"⚠️ 检查/撤销挂单失败: {e}")
-
             # 🔑 关键：查询交易所实际持仓，检查方向是否一致
             try:
                 position_info = self.exchange.get_position(config.SYMBOL)
@@ -2330,21 +2336,21 @@ class TradeEngine:
                     self.logger.warning(f"⚠️ [市价平仓] 查询持仓为空，清理本地虚假持仓 | 原因={reason}")
                     self.positions.remove(pos)
                     return True  # 返回True表示已处理
-                    
+
                 exchange_amt = float(position_info.get('position_amount', 0))
                 exchange_side = 'long' if exchange_amt > 0 else 'short' if exchange_amt < 0 else None
                 exchange_qty = abs(int(exchange_amt))
-                
+
                 self.logger.info(
                     f"📊 [市价平仓前检查] 交易所持仓: {exchange_side} {exchange_qty}张 | "
                     f"本地持仓: {pos.side} {pos.contracts}张"
                 )
-                
+
                 if exchange_qty <= 0:
                     self.logger.warning(f"⚠️ [市价平仓] 交易所无持仓，清理本地虚假持仓 | 原因={reason}")
                     self.positions.remove(pos)
                     return True
-                    
+
                 if exchange_side != pos.side:
                     self.logger.warning(
                         f"⚠️ [市价平仓] 交易所持仓方向({exchange_side})与本地({pos.side})不符，"
@@ -2352,12 +2358,13 @@ class TradeEngine:
                     )
                     self.positions.remove(pos)
                     return True
-                    
+
             except Exception as e:
                 self.logger.error(f"❌ [市价平仓] 查询持仓失败: {e}")
                 # 查询失败时仍然允许下单，保持原有行为
 
             # 使用市价单，添加reduceOnly确保是平仓而非开反向仓
+            # 注意: 此时尚未取消保护止损单, 若平仓失败保护止损仍可兜底
             order = self.exchange.place_order(
                 symbol=config.SYMBOL,
                 side=close_side,
@@ -2377,7 +2384,7 @@ class TradeEngine:
                 poll_timeout = 10
                 poll_interval = 0.5
                 start_time = time.time()
-                
+
                 while time.time() - start_time < poll_timeout:
                     try:
                         queried_order = self.exchange.get_order(config.SYMBOL, order.order_id)
@@ -2398,6 +2405,14 @@ class TradeEngine:
                     fallback_price=order.avg_price if order.avg_price > 0 else price
                 )
                 self.logger.info(f"✅ 市价单成交 @ {actual_price:.2f}")
+
+                # 平仓成功后再取消所有相关挂单(保护止损/止盈),
+                # 避免平仓失败时仓位裸露
+                try:
+                    self._cancel_all_related_orders(pos)
+                except Exception as cancel_err:
+                    self.logger.warning(f"⚠️ 平仓后取消挂单失败(不影响平仓结果): {cancel_err}")
+
                 self._close_position_after_sl(pos, ts, actual_price, reason, order_id=order.order_id)
                 return True
             else:
@@ -2441,15 +2456,26 @@ class TradeEngine:
         # 更新已实现盈亏
         self.realized_pnl += net_btc
 
+        # 根据平仓原因选择日志事件标签和描述
+        if reason == 'timeout_close':
+            event_label = 'EOD_CLOSE'
+            details = f"超时强制平仓"
+        elif reason == 'stop_loss':
+            event_label = 'STOP_LOSS'
+            details = f"止损触发 尝试次数={pos.sl_order_attempts}"
+        else:
+            event_label = reason.upper() if reason else 'CLOSE'
+            details = f"平仓原因: {reason}"
+
         # 记录日志
         self.record_log(
             ts,
-            'STOP_LOSS',
+            event_label,
             pos.side,
             price,
             pos.contracts,
             gross_pnl_btc,
-            f"止损触发 尝试次数={pos.sl_order_attempts}",
+            details,
             fee_rate,
             fee_btc * price
         )
@@ -2566,8 +2592,8 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"飞书止盈回撤通知发送失败: {e}")
 
-        # 取消所有相关挂单
-        self._cancel_all_related_orders(pos)
+        # 注意: 不在此处取消挂单, 保留保护止损单作为兜底
+        # 取消操作延后到市价平仓成交成功后执行
 
         # 🔑 关键：先查询交易所实际持仓，确认本地持仓与交易所一致
         try:
@@ -2645,6 +2671,13 @@ class TradeEngine:
                 actual_price = order.avg_price if order.avg_price > 0 else close_price
                 self.logger.info(f"✅ 回撤市价单成交 @ {actual_price:.2f}")
 
+                # 平仓成交后再取消所有相关挂单(保护止损/止盈),
+                # 避免平仓失败时仓位裸露
+                try:
+                    self._cancel_all_related_orders(pos)
+                except Exception as cancel_err:
+                    self.logger.warning(f"⚠️ 平仓后取消挂单失败(不影响平仓结果): {cancel_err}")
+
                 # 计算盈亏
                 notional_usd = cn * pos.contracts
                 if pos.side == 'long':
@@ -2710,39 +2743,13 @@ class TradeEngine:
             minutes_in_position >= config.CLOSE_TIME_MINUTES and
             not pos.tp_activated
         ):
-            cn = config.CONTRACT_NOTIONAL
-            notional_usd = cn * pos.contracts
-
-            if pos.side == 'long':
-                gross_pnl_btc = notional_usd * (
-                    1 / pos.entry_price - 1 / price
-                )
-                gross_btc = notional_usd * (
-                    2 / pos.entry_price - 1 / price
-                )
-            else:
-                gross_pnl_btc = notional_usd * (
-                    1 / price - 1 / pos.entry_price
-                )
-                gross_btc = notional_usd / price
-
-            fee_rate = 0
-            self.realized_pnl += gross_btc
-
-            self.record_log(
-                ts,
-                'EOD_CLOSE',
-                pos.side,
-                price,
-                pos.contracts,
-                gross_pnl_btc,
-                f"超时强制平仓 持仓{minutes_in_position:.0f}分钟",
-                fee_rate,
-                0
+            self.logger.warning(
+                f"⏰ [超时平仓触发] 持仓{minutes_in_position:.0f}分钟 "
+                f"超过阈值 {config.CLOSE_TIME_MINUTES} 分钟 | "
+                f"持仓ID={pos.id} | 方向={pos.side} | 数量={pos.contracts}张"
             )
-
-            self.close_position(pos, ts, price, 'timeout_close', gross_btc, pnl_already_applied=True)
-            return True
+            # 走市价平仓完整流程: 取消挂单 -> 核对持仓 -> 下市价单 -> 轮询成交 -> 更新内部状态
+            return self._market_close_position(pos, ts, price, reason='timeout_close')
 
         return False
 
