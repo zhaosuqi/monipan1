@@ -94,9 +94,13 @@ class Trade:
 TRADE_HISTORY_REPORT_COUNT = 10
 TRADE_HISTORY_FETCH_LIMIT = 100
 TRADE_HISTORY_MAX_FETCH_PAGES = 20
-# 交易报告查询的回看窗口（天）。币安 userTrades 不传 startTime 时默认只返回最近 7 天，
-# 超过 7 天无交易会查不到历史，导致报告被跳过，因此显式指定回看窗口。
+# 交易报告查询的回看窗口（天）。币安 userTrades 传 startTime 时会从该时间起
+# 升序返回最旧的成交（约 7 天封顶），与向更早时间翻页的方向相反；
+# 因此查询只带 endTime（不传时返回最近成交），该常量仅作为回溯的停止条件。
 TRADE_HISTORY_LOOKBACK_DAYS = 30
+# 某页窗口内无成交时，向更早时间回退的步长（天）。
+# 币安不传 startTime 时只返回 endTime 前约 7 天内的成交，空页需按此步长继续回退。
+TRADE_HISTORY_EMPTY_PAGE_STEP_DAYS = 7
 
 
 class TradeEngine:
@@ -765,6 +769,8 @@ class TradeEngine:
         seen_keys = set()
         end_time = None
         previous_earliest_ms = None
+        # 回看窗口仅作为停止条件，不作为查询参数：
+        # 币安 userTrades 传 startTime 会升序返回最旧成交，导致永远翻不到近期成交。
         start_time = datetime.now() - timedelta(days=TRADE_HISTORY_LOOKBACK_DAYS)
         start_time_ms = int(start_time.timestamp() * 1000)
         self.logger.info(
@@ -776,7 +782,6 @@ class TradeEngine:
             batch = self.exchange.get_user_trades(
                 config.SYMBOL,
                 limit=TRADE_HISTORY_FETCH_LIMIT,
-                start_time=start_time,
                 end_time=end_time,
                 raise_on_error=True
             )
@@ -784,7 +789,19 @@ class TradeEngine:
                 f"   第 {page_index + 1} 页成交明细数: {len(batch) if batch else 0}"
             )
             if not batch:
-                break
+                # 不传 startTime 时币安只返回 endTime 前约 7 天内的成交；
+                # 该窗口无成交则按固定步长向更早时间回退，直到超出回看窗口
+                fallback_end = (end_time or datetime.now()) - timedelta(
+                    days=TRADE_HISTORY_EMPTY_PAGE_STEP_DAYS
+                )
+                if fallback_end < start_time:
+                    break
+                end_time = fallback_end
+                self.logger.info(
+                    f"   当前窗口无成交，回退至 "
+                    f"{end_time.strftime('%Y-%m-%d %H:%M')} 之前继续查询"
+                )
+                continue
 
             for trade in batch:
                 key = self._trade_dedupe_key(trade)
