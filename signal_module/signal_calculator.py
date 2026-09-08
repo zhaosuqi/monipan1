@@ -11,8 +11,9 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
+import numpy as np
 import pandas as pd
 
 from core.config import config
@@ -22,6 +23,106 @@ from signal_module.rolling_mean_tracker import get_rolling_mean_tracker
 from signal_module.time_rolling_mean import get_time_rolling_mean_tracker
 
 logger = get_logger('signal_module.calculator')
+
+
+class SafeRangeAnchor(NamedTuple):
+    anchor: float        # 锚定点 M：多头为范围内最高收盘价，空头为最低收盘价
+    leg_price: float     # 腿端点：多头为低点 L，空头为高点 A
+    swing_price: float   # 摆动点：多头为高点 H，空头为低点 B
+
+
+def _find_safe_range_anchor(window_closes, s, swing_ratio, side):
+    """在窗口收盘价中定位锚定点 M，用于判断信号点 S 是否处于"前高/前低"附近。
+
+    移植自 macd_refactor.py V5.0，逻辑保持一致。
+
+    window_closes: 一维数组，按时间从最旧到最新（不含当前 bar）。
+    s: 当前信号点收盘价。
+    swing_ratio: 摆动幅度（如 0.02 表示 2%），仅用于第1步定位 L/A。
+    side: 'long' 或 'short'，short 走完全镜像逻辑。
+
+    多头：从最新向前找最近的 close <= s*(1-swing) 的低点 L；然后在窗口起点
+    到 L 之间直接取最高收盘价作为锚点 M（不再要求 M >= L*(1+swing)）。
+    L 之前没有任何 K 线时视为不存在 M，返回 None（视为安全，放行）。
+    """
+    closes = np.asarray(window_closes, dtype=float)
+    n = closes.size
+    if n == 0 or not np.isfinite(s) or s <= 0 or swing_ratio <= 0:
+        return None
+    is_long = side == 'long'
+
+    # 第1步：多头找低于 S 的最近点 L；空头找高于 S 的最近点 A
+    leg_threshold = s * (1 - swing_ratio) if is_long else s * (1 + swing_ratio)
+    leg_idx = -1
+    for j in range(n - 1, -1, -1):
+        c = closes[j]
+        if (is_long and c <= leg_threshold) or (not is_long and c >= leg_threshold):
+            leg_idx = j
+            break
+    if leg_idx <= 0:
+        # 找不到 L/A，或 L/A 就在窗口起点（之前没有 K 线可取极值）
+        return None
+    leg_price = closes[leg_idx]
+
+    # 第2步：在窗口起点到 L/A 之间取最高（多头）/最低（空头）收盘价作为锚点 M
+    seg = closes[:leg_idx]
+    if not np.isfinite(seg).any():
+        return None
+    swing_idx = int(np.nanargmax(seg) if is_long else np.nanargmin(seg))
+    anchor = float(seg[swing_idx])
+    return SafeRangeAnchor(anchor=anchor, leg_price=leg_price, swing_price=anchor)
+
+
+def _pass_safe_range(history_rows: List[Dict], row: Dict, side_text: str) -> bool:
+    """安全范围检查（对齐 V5.0）：价格从前期锚点M摆动≥swing后又弹回M±near内时放弃开仓。
+
+    共 A/B/C 三组，同判断逻辑；每组内任一参数<=0该组关闭；所有启用的组都通过才放行。
+    history_rows 不含当前K线，与 V5.0 的 alldf['close'].iloc[i-bars:i] 对应。
+    """
+    checks = [
+        ("A", getattr(config, "SAFE_RANGE_WINDOW_HOURS", 0), getattr(config, "SAFE_RANGE_SWING_RATIO", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO", 0)),
+        ("B", getattr(config, "SAFE_RANGE_WINDOW_HOURS_B", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_B", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_B", 0)),
+        ("C", getattr(config, "SAFE_RANGE_WINDOW_HOURS_C", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_C", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_C", 0)),
+    ]
+    for group_name, raw_hours, raw_swing, raw_near in checks:
+        try:
+            window_hours = float(raw_hours)
+        except Exception:
+            window_hours = 0.0
+        try:
+            swing_ratio = float(raw_swing)
+        except Exception:
+            swing_ratio = 0.0
+        try:
+            near_ratio = float(raw_near)
+        except Exception:
+            near_ratio = 0.0
+        if window_hours <= 0 or swing_ratio <= 0 or near_ratio <= 0:
+            continue
+        bars = int(window_hours * 60)
+        if bars <= 0:
+            continue
+        window_closes = [item['close'] for item in history_rows[-bars:] if item.get('close') is not None]
+        sr_side = 'long' if side_text == "多头" else 'short'
+        sr_result = _find_safe_range_anchor(window_closes, row['close'], swing_ratio, sr_side)
+        if sr_result is None:
+            continue
+        if abs(row['close'] - sr_result.anchor) / sr_result.anchor <= near_ratio:
+            logger.debug(
+                "DEBUG: 跳过%s开仓 due to safe range anchor at %s, group=%s, close=%s, anchor=%s, leg_price=%s, swing_price=%s, near_ratio=%s, swing_ratio=%s, window_hours=%s",
+                side_text,
+                row.get('close_time'),
+                group_name,
+                row['close'],
+                sr_result.anchor,
+                sr_result.leg_price,
+                sr_result.swing_price,
+                near_ratio,
+                swing_ratio,
+                window_hours,
+            )
+            return False
+    return True
 
 
 @dataclass
@@ -448,6 +549,8 @@ class SignalCalculator:
                 ("C", getattr(config, "M_PRICE_CHANGE_C", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_C", 0)),
                 ("D", getattr(config, "M_PRICE_CHANGE_D", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_D", 0)),
                 ("E", getattr(config, "M_PRICE_CHANGE_E", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_E", 0)),
+                ("F", getattr(config, "M_PRICE_CHANGE_F", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_F", 0)),
+                ("G", getattr(config, "M_PRICE_CHANGE_G", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_G", 0)),
             ]
             for group_name, raw_limit, raw_minutes in checks:
                 try:
@@ -460,20 +563,25 @@ class SignalCalculator:
                     minutes_back = 0
                 if limit <= 0 or minutes_back <= 0 or len(history_rows) < minutes_back:
                     continue
-                r = history_rows[-1 * minutes_back:]
-                r_high_max = max(item['high'] for item in r)
-                r_low_min = min(item['low'] for item in r)
-                r_range = r_high_max - r_low_min
-                price_change_limit = limit if limit > 1 else row['close'] * limit
-                if r_range > price_change_limit:
+                # 窗口 = 前 minutes_back 根历史K线 + 当前K线（对齐 V5.0 的 alldf[i-minutes_back:i+1]）
+                window_rows = history_rows[-1 * minutes_back:] + [row]
+                r_high_max = max(item['high'] for item in window_rows)
+                r_low_min = min(item['low'] for item in window_rows)
+                price_change_limit = limit if limit > 1 else abs(row['close']) * limit
+                # V5.0 新逻辑：最高价超过上浮价，或最低价跌破下浮价时不开仓
+                upper_price = row['close'] + price_change_limit
+                lower_price = row['close'] - price_change_limit
+                if r_high_max > upper_price or r_low_min < lower_price:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price range at %s, group=%s, high_max=%s, low_min=%s, range=%s, limit=%s, minutes_back=%s",
+                        "DEBUG: 跳过%s开仓 due to price jump at %s, group=%s, close=%s, high_max=%s, low_min=%s, upper=%s, lower=%s, limit=%s, minutes_back=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
+                        row['close'],
                         r_high_max,
                         r_low_min,
-                        r_range,
+                        upper_price,
+                        lower_price,
                         price_change_limit,
                         minutes_back,
                     )
@@ -487,6 +595,8 @@ class SignalCalculator:
                 ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
                 ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
                 ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+                ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
+                ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
             ]
             for group_name, raw_count, raw_limit in checks:
                 try:
@@ -499,22 +609,26 @@ class SignalCalculator:
                     limit = 0.0
                 if state_prices is None or count <= 0 or limit <= 0:
                     continue
+                # 窗口含当前K线收盘价，共 count 根（对齐 V5.0 的 alldf close[i-count+1:i+1]）
                 price_slice = state_prices.iloc[-1 * count:]
                 if price_slice.empty:
                     continue
                 max_price = price_slice.max()
                 min_price = price_slice.min()
-                upper = row['close'] + row['close'] * limit
-                lower = row['close'] - row['close'] * limit
-                if max_price > upper and min_price < lower:
+                # V5.0 新逻辑：窗口收盘价极差 > 当前close*limit 时不开仓
+                price_diff = max_price - min_price
+                allowed_diff = row['close'] * limit
+                if price_diff > allowed_diff:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price change limit at %s, group=%s, min_price=%s, max_price=%s, close=%s, limit=%s, count=%s",
+                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, max_price=%s, min_price=%s, diff=%s, allowed=%s, limit=%s, count=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
-                        min_price,
-                        max_price,
                         row['close'],
+                        max_price,
+                        min_price,
+                        price_diff,
+                        allowed_diff,
                         limit,
                         count,
                     )
@@ -787,11 +901,16 @@ class SignalCalculator:
             is_long = False
             reasons.append("价格变化窗口过滤未通过")
 
-        if is_long and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
-            if row.get('vol_ma5') < row.get('vol_ma10'):
-                is_long = False
-                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
-                logger.debug(f"DEBUG: 跳过多头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
+        if is_long and not _pass_safe_range(history_rows, row, "多头"):
+            is_long = False
+            reasons.append("安全范围检查未通过")
+
+        # 对齐 V5.0：成交量 MA5/MA10 过滤已停用（注释保留，与 macd_refactor.py 一致）
+        # if is_long and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
+        #     if row.get('vol_ma5') < row.get('vol_ma10'):
+        #         is_long = False
+        #         reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
+        #         logger.debug(f"DEBUG: 跳过多头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
 
         # 通过所有检查
         if is_long:
@@ -841,6 +960,8 @@ class SignalCalculator:
                 ("C", getattr(config, "M_PRICE_CHANGE_C", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_C", 0)),
                 ("D", getattr(config, "M_PRICE_CHANGE_D", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_D", 0)),
                 ("E", getattr(config, "M_PRICE_CHANGE_E", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_E", 0)),
+                ("F", getattr(config, "M_PRICE_CHANGE_F", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_F", 0)),
+                ("G", getattr(config, "M_PRICE_CHANGE_G", 0), getattr(config, "M_PRICE_CHANGE_MINUTES_G", 0)),
             ]
             for group_name, raw_limit, raw_minutes in checks:
                 try:
@@ -853,20 +974,25 @@ class SignalCalculator:
                     minutes_back = 0
                 if limit <= 0 or minutes_back <= 0 or len(history_rows) < minutes_back:
                     continue
-                r = history_rows[-1 * minutes_back:]
-                r_high_max = max(item['high'] for item in r)
-                r_low_min = min(item['low'] for item in r)
-                r_range = r_high_max - r_low_min
-                price_change_limit = limit if limit > 1 else row['close'] * limit
-                if r_range > price_change_limit:
+                # 窗口 = 前 minutes_back 根历史K线 + 当前K线（对齐 V5.0 的 alldf[i-minutes_back:i+1]）
+                window_rows = history_rows[-1 * minutes_back:] + [row]
+                r_high_max = max(item['high'] for item in window_rows)
+                r_low_min = min(item['low'] for item in window_rows)
+                price_change_limit = limit if limit > 1 else abs(row['close']) * limit
+                # V5.0 新逻辑：最高价超过上浮价，或最低价跌破下浮价时不开仓
+                upper_price = row['close'] + price_change_limit
+                lower_price = row['close'] - price_change_limit
+                if r_high_max > upper_price or r_low_min < lower_price:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price range at %s, group=%s, high_max=%s, low_min=%s, range=%s, limit=%s, minutes_back=%s",
+                        "DEBUG: 跳过%s开仓 due to price jump at %s, group=%s, close=%s, high_max=%s, low_min=%s, upper=%s, lower=%s, limit=%s, minutes_back=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
+                        row['close'],
                         r_high_max,
                         r_low_min,
-                        r_range,
+                        upper_price,
+                        lower_price,
                         price_change_limit,
                         minutes_back,
                     )
@@ -880,6 +1006,8 @@ class SignalCalculator:
                 ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
                 ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
                 ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+                ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
+                ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
             ]
             for group_name, raw_count, raw_limit in checks:
                 try:
@@ -892,22 +1020,26 @@ class SignalCalculator:
                     limit = 0.0
                 if state_prices is None or count <= 0 or limit <= 0:
                     continue
+                # 窗口含当前K线收盘价，共 count 根（对齐 V5.0 的 alldf close[i-count+1:i+1]）
                 price_slice = state_prices.iloc[-1 * count:]
                 if price_slice.empty:
                     continue
                 max_price = price_slice.max()
                 min_price = price_slice.min()
-                upper = row['close'] + row['close'] * limit
-                lower = row['close'] - row['close'] * limit
-                if max_price > upper and min_price < lower:
+                # V5.0 新逻辑：窗口收盘价极差 > 当前close*limit 时不开仓
+                price_diff = max_price - min_price
+                allowed_diff = row['close'] * limit
+                if price_diff > allowed_diff:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price change limit at %s, group=%s, min_price=%s, max_price=%s, close=%s, limit=%s, count=%s",
+                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, max_price=%s, min_price=%s, diff=%s, allowed=%s, limit=%s, count=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
-                        min_price,
-                        max_price,
                         row['close'],
+                        max_price,
+                        min_price,
+                        price_diff,
+                        allowed_diff,
                         limit,
                         count,
                     )
@@ -1147,11 +1279,16 @@ class SignalCalculator:
             is_short = False
             reasons.append("价格变化窗口过滤未通过")
 
-        if is_short and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
-            if row.get('vol_ma5') < row.get('vol_ma10'):
-                is_short = False
-                reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
-                logger.debug(f"DEBUG: 跳过空头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
+        if is_short and not _pass_safe_range(history_rows, row, "空头"):
+            is_short = False
+            reasons.append("安全范围检查未通过")
+
+        # 对齐 V5.0：成交量 MA5/MA10 过滤已停用（注释保留，与 macd_refactor.py 一致）
+        # if is_short and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
+        #     if row.get('vol_ma5') < row.get('vol_ma10'):
+        #         is_short = False
+        #         reasons.append(f"成交量MA: vol_ma5={row.get('vol_ma5'):.2f} < vol_ma10={row.get('vol_ma10'):.2f}")
+        #         logger.debug(f"DEBUG: 跳过空头开仓 due to vol_ma5 < vol_ma10 at {row.get('close_time')}, vol_ma5={row.get('vol_ma5')}, vol_ma10={row.get('vol_ma10')}")
 
         # 通过所有检查
         if is_short:
@@ -1303,6 +1440,10 @@ class SignalCalculator:
             'price_change_count_d': config.PRICE_CHANGE_COUNT_D,
             'price_change_limit_e': config.PRICE_CHANGE_LIMIT_E,
             'price_change_count_e': config.PRICE_CHANGE_COUNT_E,
+            'price_change_limit_f': config.PRICE_CHANGE_LIMIT_F,
+            'price_change_count_f': config.PRICE_CHANGE_COUNT_F,
+            'price_change_limit_g': config.PRICE_CHANGE_LIMIT_G,
+            'price_change_count_g': config.PRICE_CHANGE_COUNT_G,
             'm_price_change': config.M_PRICE_CHANGE,
             'm_price_change_minutes': config.M_PRICE_CHANGE_MINUTES,
             'm_price_change_b': config.M_PRICE_CHANGE_B,
@@ -1313,6 +1454,21 @@ class SignalCalculator:
             'm_price_change_minutes_d': config.M_PRICE_CHANGE_MINUTES_D,
             'm_price_change_e': config.M_PRICE_CHANGE_E,
             'm_price_change_minutes_e': config.M_PRICE_CHANGE_MINUTES_E,
+            'm_price_change_f': config.M_PRICE_CHANGE_F,
+            'm_price_change_minutes_f': config.M_PRICE_CHANGE_MINUTES_F,
+            'm_price_change_g': config.M_PRICE_CHANGE_G,
+            'm_price_change_minutes_g': config.M_PRICE_CHANGE_MINUTES_G,
+
+            # ===== 安全范围检查 =====
+            'safe_range_window_hours': config.SAFE_RANGE_WINDOW_HOURS,
+            'safe_range_swing_ratio': config.SAFE_RANGE_SWING_RATIO,
+            'safe_range_near_ratio': config.SAFE_RANGE_NEAR_RATIO,
+            'safe_range_window_hours_b': config.SAFE_RANGE_WINDOW_HOURS_B,
+            'safe_range_swing_ratio_b': config.SAFE_RANGE_SWING_RATIO_B,
+            'safe_range_near_ratio_b': config.SAFE_RANGE_NEAR_RATIO_B,
+            'safe_range_window_hours_c': config.SAFE_RANGE_WINDOW_HOURS_C,
+            'safe_range_swing_ratio_c': config.SAFE_RANGE_SWING_RATIO_C,
+            'safe_range_near_ratio_c': config.SAFE_RANGE_NEAR_RATIO_C,
 
             # ===== 止盈止损 =====
             'stop_loss_points': config.STOP_LOSS_POINTS,
