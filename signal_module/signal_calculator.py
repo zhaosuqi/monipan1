@@ -613,22 +613,56 @@ class SignalCalculator:
                 price_slice = state_prices.iloc[-1 * count:]
                 if price_slice.empty:
                     continue
-                max_price = price_slice.max()
-                min_price = price_slice.min()
-                # V5.0 新逻辑：窗口收盘价极差 > 当前close*limit 时不开仓
+                price_values = price_slice.to_numpy(dtype=float)
+                if side_text == "空头":
+                    # 空头：先找窗口最高点，再找最高点时间到当前点区间的最低点
+                    # 变化率 = (最高点 - 最低点) / 最高点
+                    peak_pos = int(price_values.argmax())
+                    max_price = float(price_values[peak_pos])
+                    min_price = float(price_values[peak_pos:].min())
+                    base_price = max_price
+                    anchor_price = max_price
+                    direction = "先高后低"
+                else:
+                    # 多头：先找窗口最低点，再找最低点时间到当前点区间的最高点
+                    # 变化率 = (最高点 - 最低点) / 最低点
+                    trough_pos = int(price_values.argmin())
+                    min_price = float(price_values[trough_pos])
+                    max_price = float(price_values[trough_pos:].max())
+                    base_price = min_price
+                    anchor_price = min_price
+                    direction = "先低后高"
                 price_diff = max_price - min_price
-                allowed_diff = row['close'] * limit
-                if price_diff > allowed_diff:
+                price_rate = price_diff / base_price if base_price > 0 else 0.0
+                price_blocked = price_rate > limit
+                logger.info(
+                    "价格判断%s组 at %s: side=%s, count=%s分钟, 窗口收盘价(最近%s根,含当前)=%s, %s, max=%.2f, min=%.2f, 基准价=%.2f, 变化率=(max-min)/基准=%.4f, 当前close=%.2f, limit=%.4f, 判定=%s",
+                    group_name,
+                    row.get('close_time'),
+                    side_text,
+                    count,
+                    len(price_slice),
+                    [round(float(p), 2) for p in price_slice.tolist()],
+                    direction,
+                    max_price,
+                    min_price,
+                    base_price,
+                    price_rate,
+                    row['close'],
+                    limit,
+                    "禁止开仓(变化率>limit)" if price_blocked else "通过",
+                )
+                if price_blocked:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, max_price=%s, min_price=%s, diff=%s, allowed=%s, limit=%s, count=%s",
+                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, anchor_price=%s, max_price=%s, min_price=%s, rate=%s, limit=%s, count=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
                         row['close'],
+                        anchor_price,
                         max_price,
                         min_price,
-                        price_diff,
-                        allowed_diff,
+                        price_rate,
                         limit,
                         count,
                     )
@@ -1024,22 +1058,56 @@ class SignalCalculator:
                 price_slice = state_prices.iloc[-1 * count:]
                 if price_slice.empty:
                     continue
-                max_price = price_slice.max()
-                min_price = price_slice.min()
-                # V5.0 新逻辑：窗口收盘价极差 > 当前close*limit 时不开仓
+                price_values = price_slice.to_numpy(dtype=float)
+                if side_text == "空头":
+                    # 空头：先找窗口最高点，再找最高点时间到当前点区间的最低点
+                    # 变化率 = (最高点 - 最低点) / 最高点
+                    peak_pos = int(price_values.argmax())
+                    max_price = float(price_values[peak_pos])
+                    min_price = float(price_values[peak_pos:].min())
+                    base_price = max_price
+                    anchor_price = max_price
+                    direction = "先高后低"
+                else:
+                    # 多头：先找窗口最低点，再找最低点时间到当前点区间的最高点
+                    # 变化率 = (最高点 - 最低点) / 最低点
+                    trough_pos = int(price_values.argmin())
+                    min_price = float(price_values[trough_pos])
+                    max_price = float(price_values[trough_pos:].max())
+                    base_price = min_price
+                    anchor_price = min_price
+                    direction = "先低后高"
                 price_diff = max_price - min_price
-                allowed_diff = row['close'] * limit
-                if price_diff > allowed_diff:
+                price_rate = price_diff / base_price if base_price > 0 else 0.0
+                price_blocked = price_rate > limit
+                logger.info(
+                    "价格判断%s组 at %s: side=%s, count=%s分钟, 窗口收盘价(最近%s根,含当前)=%s, %s, max=%.2f, min=%.2f, 基准价=%.2f, 变化率=(max-min)/基准=%.4f, 当前close=%.2f, limit=%.4f, 判定=%s",
+                    group_name,
+                    row.get('close_time'),
+                    side_text,
+                    count,
+                    len(price_slice),
+                    [round(float(p), 2) for p in price_slice.tolist()],
+                    direction,
+                    max_price,
+                    min_price,
+                    base_price,
+                    price_rate,
+                    row['close'],
+                    limit,
+                    "禁止开仓(变化率>limit)" if price_blocked else "通过",
+                )
+                if price_blocked:
                     logger.debug(
-                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, max_price=%s, min_price=%s, diff=%s, allowed=%s, limit=%s, count=%s",
+                        "DEBUG: 跳过%s开仓 due to price change window at %s, group=%s, close=%s, anchor_price=%s, max_price=%s, min_price=%s, rate=%s, limit=%s, count=%s",
                         side_text,
                         row.get('close_time'),
                         group_name,
                         row['close'],
+                        anchor_price,
                         max_price,
                         min_price,
-                        price_diff,
-                        allowed_diff,
+                        price_rate,
                         limit,
                         count,
                     )
