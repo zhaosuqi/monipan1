@@ -760,87 +760,62 @@ class TradeEngine:
         self,
         target_count: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """分页回溯交易所成交明细，直到拼出目标数量的完整交易或历史耗尽。"""
+        """分段正向拉取交易所成交明细，重建最近 target_count 笔完整平仓交易。"""
         target = max(
             10,
             int(target_count or getattr(self, 'trade_history_report_count', TRADE_HISTORY_REPORT_COUNT))
         )
         all_trades: List[Dict[str, Any]] = []
         seen_keys = set()
-        end_time = None
-        previous_earliest_ms = None
-        # 回看窗口仅作为停止条件，不作为查询参数：
-        # 币安 userTrades 传 startTime 会升序返回最旧成交，导致永远翻不到近期成交。
-        start_time = datetime.now() - timedelta(days=TRADE_HISTORY_LOOKBACK_DAYS)
-        start_time_ms = int(start_time.timestamp() * 1000)
+        now = datetime.now()
+        start_time = now - timedelta(days=TRADE_HISTORY_LOOKBACK_DAYS)
         self.logger.info(
             f"   查询窗口: {start_time.strftime('%Y-%m-%d %H:%M')} 至今 "
             f"(回看 {TRADE_HISTORY_LOOKBACK_DAYS} 天)"
         )
 
-        for page_index in range(TRADE_HISTORY_MAX_FETCH_PAGES):
-            batch = self.exchange.get_user_trades(
-                config.SYMBOL,
-                limit=TRADE_HISTORY_FETCH_LIMIT,
-                end_time=end_time,
-                raise_on_error=True
+        # 币安 dapi userTrades 不传 startTime 时按升序返回窗口内最旧的 limit 条，
+        # 成交总数超过 limit 后最新成交永远拉不到；且 startTime~endTime 不能
+        # 超过 7 天。因此显式分段（≤7天）自过去向现在正向翻页，保证最新成交易漏。
+        page_index = 0
+        seg_start = start_time
+        while seg_start < now and page_index < TRADE_HISTORY_MAX_FETCH_PAGES:
+            seg_end = min(
+                seg_start + timedelta(days=TRADE_HISTORY_EMPTY_PAGE_STEP_DAYS),
+                now
             )
-            self.logger.info(
-                f"   第 {page_index + 1} 页成交明细数: {len(batch) if batch else 0}"
-            )
-            if not batch:
-                # 不传 startTime 时币安只返回 endTime 前约 7 天内的成交；
-                # 该窗口无成交则按固定步长向更早时间回退，直到超出回看窗口
-                fallback_end = (end_time or datetime.now()) - timedelta(
-                    days=TRADE_HISTORY_EMPTY_PAGE_STEP_DAYS
+            cursor = seg_start
+            while page_index < TRADE_HISTORY_MAX_FETCH_PAGES:
+                batch = self.exchange.get_user_trades(
+                    config.SYMBOL,
+                    limit=TRADE_HISTORY_FETCH_LIMIT,
+                    start_time=cursor,
+                    end_time=seg_end,
+                    raise_on_error=True
                 )
-                if fallback_end < start_time:
-                    break
-                end_time = fallback_end
+                page_index += 1
                 self.logger.info(
-                    f"   当前窗口无成交，回退至 "
-                    f"{end_time.strftime('%Y-%m-%d %H:%M')} 之前继续查询"
+                    f"   第 {page_index} 页成交明细数: {len(batch) if batch else 0}"
                 )
-                continue
+                if not batch:
+                    break
+                for trade in batch:
+                    key = self._trade_dedupe_key(trade)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    all_trades.append(trade)
+                if len(batch) < TRADE_HISTORY_FETCH_LIMIT:
+                    break  # 本段已拉完
+                latest_ms = max(int(t.get('time', 0) or 0) for t in batch)
+                cursor = datetime.fromtimestamp((latest_ms + 1) / 1000)
+            seg_start = seg_end
 
-            for trade in batch:
-                key = self._trade_dedupe_key(trade)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                all_trades.append(trade)
-
-            report_trades = self._build_trade_history_report_trades(
-                all_trades,
-                target
-            )
-            self.logger.info(
-                f"   已重建完整平仓交易数: {len(report_trades)}/{target}"
-            )
-            if len(report_trades) >= target:
-                return report_trades
-
-            trade_times = [
-                int(t.get('time'))
-                for t in batch
-                if t.get('time') is not None
-            ]
-            if not trade_times:
-                break
-            earliest_ms = min(trade_times)
-            if (
-                previous_earliest_ms is not None and
-                earliest_ms >= previous_earliest_ms
-            ):
-                self.logger.warning("   成交分页未继续向更早时间推进，停止回溯")
-                break
-
-            previous_earliest_ms = earliest_ms
-            if earliest_ms <= start_time_ms:
-                break
-            end_time = datetime.fromtimestamp((earliest_ms - 1) / 1000)
-
-        return self._build_trade_history_report_trades(all_trades, target)
+        report_trades = self._build_trade_history_report_trades(all_trades, target)
+        self.logger.info(
+            f"   已重建完整平仓交易数: {len(report_trades)}/{target}"
+        )
+        return report_trades
 
     def _send_trade_history_report(self):
         """发送交易历史报告到飞书"""
