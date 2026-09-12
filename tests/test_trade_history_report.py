@@ -17,10 +17,11 @@ class FakeExchange:
         self.pages = list(pages)
         self.calls = []
 
-    def get_user_trades(self, symbol, limit=500, end_time=None, raise_on_error=False):
+    def get_user_trades(self, symbol, limit=500, start_time=None, end_time=None, raise_on_error=False):
         self.calls.append({
             'symbol': symbol,
             'limit': limit,
+            'start_time': start_time,
             'end_time': end_time,
             'raise_on_error': raise_on_error,
         })
@@ -59,7 +60,7 @@ def make_close_long(index, close_time):
 
 
 def test_fetch_trade_history_report_trades_pages_until_ten_complete_trades(monkeypatch):
-    base = datetime(2026, 6, 30, 12, 0, 0)
+    base = datetime.now() - timedelta(days=1)
     newest_six = []
     older_four = []
 
@@ -86,11 +87,15 @@ def test_fetch_trade_history_report_trades_pages_until_ten_complete_trades(monke
     assert len(exchange.calls) == 2
     assert exchange.calls[0]['limit'] == 100
     assert exchange.calls[0]['raise_on_error'] is True
+    # 首页不传 start_time/end_time，取最近成交；后续页仅按 end_time 向更早翻页
+    assert exchange.calls[0]['start_time'] is None
+    assert exchange.calls[0]['end_time'] is None
+    assert exchange.calls[1]['start_time'] is None
     assert exchange.calls[1]['end_time'] < base
 
 
 def test_fetch_trade_history_report_trades_keeps_paging_until_entries_are_available(monkeypatch):
-    base = datetime(2026, 6, 30, 12, 0, 0)
+    base = datetime.now() - timedelta(days=1)
     close_page = []
     open_page = []
 
@@ -113,3 +118,48 @@ def test_fetch_trade_history_report_trades_keeps_paging_until_entries_are_availa
     assert len(trades) == 10
     assert all(t['entry_price'] > 0 for t in trades)
     assert len(exchange.calls) == 2
+
+
+def make_engine(exchange):
+    engine = TradeEngine.__new__(TradeEngine)
+    engine.exchange = exchange
+    engine.logger = type('Logger', (), {
+        'info': lambda *args, **kwargs: None,
+        'warning': lambda *args, **kwargs: None,
+    })()
+    return engine
+
+
+def test_fetch_trade_history_report_trades_steps_back_when_page_is_empty(monkeypatch):
+    """最近 7 天无成交时，首页为空，应按固定步长向更早回退继续查询。"""
+    base = datetime.now() - timedelta(days=10)
+    old_page = []
+    for idx in range(10):
+        old_page.extend(make_closed_long(idx, base - timedelta(minutes=idx * 10)))
+
+    exchange = FakeExchange([[], old_page])
+    engine = make_engine(exchange)
+    monkeypatch.setattr('trade_module.trade_engine.config.SYMBOL', 'BTCUSD_PERP')
+
+    trades = engine._fetch_trade_history_report_trades(target_count=10)
+
+    assert len(trades) == 10
+    assert len(exchange.calls) == 2
+    assert exchange.calls[0]['end_time'] is None
+    # 第二页回退约 7 天
+    step = datetime.now() - exchange.calls[1]['end_time']
+    assert timedelta(days=6) < step < timedelta(days=8)
+
+
+def test_fetch_trade_history_report_trades_stops_empty_paging_at_lookback(monkeypatch):
+    """一直查不到成交时，回退到回看窗口之外即停止，不会无限翻页。"""
+    exchange = FakeExchange([])
+    engine = make_engine(exchange)
+    monkeypatch.setattr('trade_module.trade_engine.config.SYMBOL', 'BTCUSD_PERP')
+
+    trades = engine._fetch_trade_history_report_trades(target_count=10)
+
+    assert trades == []
+    # 每次空页回退 7 天：-7/-14/-21/-28 各查一页，再回退到 -35 超出 30 天窗口停止
+    assert len(exchange.calls) == 5
+    assert exchange.calls[-1]['end_time'] < datetime.now() - timedelta(days=20)
