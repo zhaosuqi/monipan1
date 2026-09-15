@@ -1119,6 +1119,8 @@ class SignalCalculator:
         if hist15 < -1 * config.T0_HIST15_LIMIT or hist15 > -1 * config.T0_HIST15_LIMIT_MIN:
             is_short = False
             reasons.append(f"HIST15: {hist15:.2f}，T0_HIST15_LIMIT={config.T0_HIST15_LIMIT}, T0_HIST15_LIMIT_MIN={config.T0_HIST15_LIMIT_MIN}")
+            ts_str = str(row.get('open_time', ''))
+            logger.warning(f"❌ [{ts_str}] 空头信号被拒绝，原因: {'; '.join(reasons)}")
             return False, "; ".join(reasons)
 
         # DIF15限制 (空头符号相反)
