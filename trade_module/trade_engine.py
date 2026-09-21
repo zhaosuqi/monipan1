@@ -2019,13 +2019,14 @@ class TradeEngine:
             # 检查超时
             if elapsed >= timeout:
                 self.logger.error(f"❌ [查询订单] 轮询超时({timeout}秒)，订单未成交")
-                # 发送飞书告警
+                # 发送飞书告警（归类为异常告警，低频推送模式下也会发送）
                 try:
                     self.feishu_bot.send_message(
                         f"⚠️ 平仓订单查询超时\n"
                         f"订单ID: {order_id}\n"
                         f"超时时间: {timeout}秒\n"
-                        f"使用fallback价格: ${fallback_price:.2f}"
+                        f"使用fallback价格: ${fallback_price:.2f}",
+                        category='alert'
                     )
                 except Exception as e:
                     self.logger.warning(f"飞书告警发送失败: {e}")

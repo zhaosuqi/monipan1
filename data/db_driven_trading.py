@@ -530,16 +530,26 @@ def parse_args(argv=None):
         action="store_true",
         help="静默启动，不发送启动阶段飞书通知"
     )
+    parser.add_argument(
+        "--push-freq",
+        choices=['high', 'low'],
+        default=None,
+        help="飞书推送频次: high=高频(全部推送，默认), low=低频(止盈回撤+平仓止损+交易报告+系统启动+异常告警)"
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     """主函数"""
     args = parse_args(argv)
-    
+
     global PRELOAD_COUNT
     PRELOAD_COUNT = args.preload
-    
+
+    # 推送频次：启动参数优先于环境变量，需在创建任何 FeishuBot 之前设置
+    if args.push_freq:
+        config.FEISHU_PUSH_FREQ = args.push_freq
+        logger.info(f"飞书推送频次: {args.push_freq} ({'全部推送' if args.push_freq == 'high' else '止盈回撤+平仓止损+交易报告+系统启动+异常告警'})")
     # 创建交易器
     trader = DBDrivenTrader(
         use_testnet=not args.live,

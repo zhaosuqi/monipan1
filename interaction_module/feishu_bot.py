@@ -13,6 +13,13 @@ class FeishuBot:
     # 东八区时区
     TZ_EAST8 = timezone(timedelta(hours=8))
 
+    # 推送频次模式
+    PUSH_FREQ_HIGH = 'high'  # 高频：全部推送
+    PUSH_FREQ_LOW = 'low'    # 低频：止盈回撤 + 平仓止损 + 交易报告 + 系统启动 + 异常告警
+
+    # 低频模式下保留的平仓原因（止损平仓、回撤平仓）
+    LOW_FREQ_CLOSE_REASONS = {'stop_loss', 'stop_loss_remote', 'drawdown_close'}
+
     @staticmethod
     def _resolve_display_asset(symbol: str) -> str:
         """从交易对中提取用于显示的基础币种，例如 XXXUSD_PERP -> XXX。"""
@@ -32,14 +39,42 @@ class FeishuBot:
         self.webhook = config.FEISHU_WEBHOOK
         self.enabled = config.FEISHU_ENABLED
         self.display_asset = self._resolve_display_asset(getattr(config, 'SYMBOL', ''))
+        self.push_freq = getattr(config, 'FEISHU_PUSH_FREQ', self.PUSH_FREQ_HIGH).lower()
+
+    def _should_push(self, category: str, reason: str = None) -> bool:
+        """根据推送频次模式判断该类别消息是否应发送。
+
+        高频(high): 全部放行。
+        低频(low): 放行止盈回撤通知、止损/回撤导致的平仓通知、交易报告
+        （含无交易心跳）、系统启动通知、异常告警。
+        """
+        if self.push_freq != self.PUSH_FREQ_LOW:
+            return True
+
+        if category == 'close_position':
+            return (reason or '').lower() in self.LOW_FREQ_CLOSE_REASONS
+        if category in ('tp_pullback', 'trade_report', 'no_trade',
+                        'system_startup', 'alert'):
+            return True
+
+        self.logger.debug(f"低频推送模式，跳过 {category} 类消息")
+        return False
 
     @staticmethod
     def _get_now_str() -> str:
         """获取当前东八区时间字符串"""
         return datetime.now(FeishuBot.TZ_EAST8).strftime("%Y-%m-%d %H:%M:%S")
 
-    def send_message(self, message: str) -> bool:
-        """发送普通文本消息"""
+    def send_message(self, message: str, category: str = 'message') -> bool:
+        """发送普通文本消息
+
+        Args:
+            message: 消息内容
+            category: 消息类别，默认 'message'（低频模式下过滤）；
+                      异常告警类文本消息可传 'alert'（低频模式放行）
+        """
+        if not self._should_push(category):
+            return False
         if not self.enabled:
             self.logger.debug("飞书未启用 (FEISHU_ENABLED=0)，跳过发送")
             return False
@@ -110,6 +145,8 @@ class FeishuBot:
         """
         发送检测到开仓信号通知（尚未下单）
         """
+        if not self._should_push('open_signal'):
+            return False
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
         side_color = "blue" if side == 'long' else "red"
         time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -209,6 +246,8 @@ class FeishuBot:
         """
         发送开仓挂单通知（富文本卡片）
         """
+        if not self._should_push('open_placed'):
+            return False
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
         side_color = "blue"
         time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -302,6 +341,8 @@ class FeishuBot:
         """
         发送开仓成交通知（富文本卡片）
         """
+        if not self._should_push('open_filled'):
+            return False
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
         side_color = "green" if side == 'long' else "red"
         time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -402,6 +443,8 @@ class FeishuBot:
         """
         发送开仓挂单撤回通知（未成交）
         """
+        if not self._should_push('open_canceled'):
+            return False
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
         time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -521,6 +564,8 @@ class FeishuBot:
             tp_hit: 已触发的止盈级别
             total_balance_btc: 当前总余额(基础币种)
         """
+        if not self._should_push('close_position', reason=reason):
+            return False
         # 调试日志：检查传入的价格
         self.logger.info(f"[飞书平仓通知] entry_price={entry_price:.2f}, close_price={close_price:.2f}")
 
@@ -709,6 +754,8 @@ class FeishuBot:
             contracts: 合约数量
             unrealized_pnl: 未实现盈亏(USD)
         """
+        if not self._should_push('tp_hit'):
+            return False
         side_cn = "做多 📈" if side == 'long' else "做空 📉"
 
         card = {
@@ -803,6 +850,8 @@ class FeishuBot:
             unrealized_pnl: 未实现盈亏(USD)
             contracts: 回撤的合约数量
         """
+        if not self._should_push('tp_pullback'):
+            return False
         side_cn = "做多" if side == 'long' else "做空"
 
         card = {
@@ -924,6 +973,8 @@ class FeishuBot:
             symbol: 交易对
             exchange_type: 交易所类型
         """
+        if not self._should_push('system_startup'):
+            return False
         mode_color = "blue" if mode == "测试网" else "red"
         mode_icon = "🧪" if mode == "测试网" else "🔴"
 
@@ -1002,6 +1053,8 @@ class FeishuBot:
             error_type: 错误类型 (连接异常/下单失败/查询失败等)
             mode: 运行模式 (实盘/测试网)
         """
+        if not self._should_push('alert'):
+            return False
         mode_color = "red" if mode == "实盘" else "orange"
         mode_icon = "🔴" if mode == "实盘" else "🧪"
 
@@ -1071,6 +1124,8 @@ class FeishuBot:
                 - fee_btc: 手续费(基础币种)
             total_balance_btc: 当前总余额(基础币种)
         """
+        if not self._should_push('trade_report'):
+            return False
         if not trades:
             return False
 
@@ -1205,6 +1260,8 @@ class FeishuBot:
         Args:
             total_balance_btc: 当前总余额(基础币种)
         """
+        if not self._should_push('no_trade'):
+            return False
         card = {
             "header": {
                 "title": {

@@ -325,6 +325,8 @@ class Config:
         # 飞书机器人
         self.FEISHU_WEBHOOK = os.getenv('FEISHU_WEBHOOK', '')
         self.FEISHU_ENABLED = os.getenv('FEISHU_ENABLED', '0').lower() in ('1', 'true', 'yes')
+        # 飞书推送频次: high=高频(全部推送), low=低频(止盈回撤+平仓止损+交易报告+系统启动+异常告警)
+        self.FEISHU_PUSH_FREQ = os.getenv('FEISHU_PUSH_FREQ', 'high').lower()
         # 交易历史报告发送间隔（分钟），0表示禁用
         self.TRADE_HISTORY_REPORT_INTERVAL = int(os.getenv('TRADE_HISTORY_REPORT_INTERVAL', '0'))
         # 交易历史报告显示最近几次交易
