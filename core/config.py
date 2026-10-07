@@ -288,6 +288,8 @@ class Config:
         # 仓位限制
         self.NO_LIMIT_POS = os.getenv('NO_LIMIT_POS', 'false').lower() in ('1', 'true', 'yes')
         self.POSITION_NOMINAL = float(os.getenv('POSITION_NOMINAL', '10000.0'))
+        # 开仓预留安全垫比例（占账户总余额），用于覆盖手续费等，避免满仓导致开仓失败
+        self.RESERVE_RATIO = float(os.getenv('RESERVE_RATIO', '0.008'))
 
         # 订单类型
         self.OPEN_TAKER_OR_MAKER = os.getenv('OPEN_TAKER_OR_MAKER', 'MAKER')

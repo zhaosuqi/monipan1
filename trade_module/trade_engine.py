@@ -966,8 +966,8 @@ class TradeEngine:
         # 使用缓存的账户总余额（由定时同步更新）
         total_balance = self.cached_total_balance
 
-        # 预留账户总余额的2%作为安全垫，避免资金耗尽导致开仓失败
-        reserve_ratio = 0.02 if not config.NO_LIMIT_POS else 0.0
+        # 预留账户总余额的一定比例作为安全垫（默认0.8%，可通过 config.RESERVE_RATIO 热更新），避免资金耗尽导致开仓失败
+        reserve_ratio = float(getattr(config, 'RESERVE_RATIO', 0.008)) if not config.NO_LIMIT_POS else 0.0
         min_reserve = total_balance * reserve_ratio  # 按缓存的账户总余额计算预留
         tradable_capital = max(0.0, available_capital - min_reserve)
         if tradable_capital <= 0:
