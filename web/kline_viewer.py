@@ -893,6 +893,11 @@ def api_config():
                 '超时平仓分钟': p.get('close_time_minutes', 9999),
                 '超时衰减点数': p.get('close_decay_points', 9999),
                 '超时平仓比例': p.get('timeout_close_ratio', 0.0001),
+                '止盈止损基准价': (
+                    '信号收盘价/持仓均价'
+                    if getattr(config, 'TP_SL_BASE_ON_ORDER_PRICE', True)
+                    else '实际成交价(旧)'
+                ),
             },
             '价格变化参数': {
                 '价格变化限制A': p.get('price_change_limit', 0.02),

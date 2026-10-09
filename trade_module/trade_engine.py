@@ -49,6 +49,8 @@ class Position:
     tp_activated: bool = False
     tp_hit_value: float = 0.0
     trace_id: str = ""
+    # 止盈止损计算基准价: 程序开仓=信号收盘价(即挂单价), 同步持仓=币安持仓均价;
+    # None/非法值时回退 entry_price（见 _get_tp_sl_base_price）
     benchmark_price: Optional[float] = None
     up_once: bool = False
 
@@ -504,7 +506,7 @@ class TradeEngine:
         cn = config.CONTRACT_NOTIONAL
         qty_per_contract = cn / remote_entry if remote_entry > 0 else 0
         trace_id = old_matched.trace_id if old_matched else str(uuid.uuid4())
-        
+
         new_pos = Position(
             id=old_matched.id if old_matched else str(uuid.uuid4()),
             side=remote_side,
@@ -1284,7 +1286,9 @@ class TradeEngine:
             tp_activated=False,
             tp_hit_value=0.0,
             trace_id=trace_id,  # 使用与订单相同的 trace_id
-            benchmark_price=actual_price,
+            # 止盈止损基准价 = 信号收盘价（上方已将 price 固定为 row['close']，
+            # MAKER 即挂单价；不区分 MAKER/TAKER，统一按信号收盘价）
+            benchmark_price=price,
             entry_hist4=row.get('macd4h'),
             entry_dif4=row.get('dif4h'),
             entry_hist1h=row.get('macd1h'),
@@ -1349,14 +1353,15 @@ class TradeEngine:
 
         # 飞书开仓通知
         try:
-            # 计算一级止盈和止损价格
+            # 计算一级止盈和止损价格（基准与引擎触发价一致: 信号收盘价/币安持仓均价）
+            base_price = self._get_tp_sl_base_price(pos)
             tp_levels = list(config.TP_LEVELS) if config.TP_LEVELS else []
             if side == 'long':
-                tp1_price = actual_price * tp_levels[0] if tp_levels else None
-                sl_price = actual_price * (1 - config.STOP_LOSS_POINTS)
+                tp1_price = base_price * tp_levels[0] if tp_levels else None
+                sl_price = base_price * (1 - config.STOP_LOSS_POINTS)
             else:
-                tp1_price = actual_price * (2 - tp_levels[0]) if tp_levels else None
-                sl_price = actual_price * (1 + config.STOP_LOSS_POINTS)
+                tp1_price = base_price * (2 - tp_levels[0]) if tp_levels else None
+                sl_price = base_price * (1 + config.STOP_LOSS_POINTS)
             
             self.feishu_bot.send_open_order_filled_notification(
                 symbol=config.SYMBOL,
@@ -1700,8 +1705,8 @@ class TradeEngine:
         if not tp_levels:
             return False
 
-        # 使用入场价作为止盈参考价
-        ref_price = pos.entry_price
+        # 止盈基准价: 默认用信号收盘价(benchmark_price)，开关关闭时回退实际成交价
+        ref_price = self._get_tp_sl_base_price(pos)
         cn = config.CONTRACT_NOTIONAL
         max_level_idx = len(tp_levels) - 1  # 最后一级别的索引
         
@@ -2230,9 +2235,21 @@ class TradeEngine:
         # 市价单平仓
         return self._market_close_position(pos, ts, price, reason='stop_loss')
 
+    def _get_tp_sl_base_price(self, pos: Position) -> float:
+        """止盈止损计算基准价。
+
+        开关 TP_SL_BASE_ON_ORDER_PRICE 开启且持仓有有效基准价时，使用
+        benchmark_price（程序开仓=信号收盘价/挂单价，同步持仓=币安持仓均价）；
+        否则回退实际成交价 entry_price（旧行为）。
+        """
+        if not getattr(config, 'TP_SL_BASE_ON_ORDER_PRICE', True):
+            return pos.entry_price
+        base = pos.benchmark_price
+        return base if base and base > 0 else pos.entry_price
+
     def _calculate_stop_price(self, pos: Position) -> float:
-        """计算止损价格"""
-        ref_price = pos.entry_price
+        """计算止损价格（基准价: 信号收盘价/币安持仓均价，见 _get_tp_sl_base_price）"""
+        ref_price = self._get_tp_sl_base_price(pos)
         
         # 计算止损点数
         if config.STOP_LOSS_POINTS < 1:

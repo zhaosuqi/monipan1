@@ -314,6 +314,12 @@ class Config:
         self.CLOSE_DECAY_POINTS = float(os.getenv('CLOSE_DECAY_POINTS', '9999'))
         self.TIMEOUT_CLOSE_RATIO = float(os.getenv('TIMEOUT_CLOSE_RATIO', '0.0001'))
 
+        # 止盈止损基准价开关: true=信号收盘价(程序主动开仓,即挂单价)/币安持仓均价(同步仓),
+        # false=实际成交价entry_price(旧行为)。
+        # 注意: 持仓中途切换会使在仓持仓的止盈止损基准跳变, 并与已挂出的远端止损单失配,
+        #       建议在空仓时或重启后切换
+        self.TP_SL_BASE_ON_ORDER_PRICE = os.getenv('TP_SL_BASE_ON_ORDER_PRICE', 'true').lower() in ('1', 'true', 'yes')
+
         # T0 特殊参数
         self.T0_HIST_1D_LIMIT = float(os.getenv('T0_HIST_1D_LIMIT', '-999'))
 
