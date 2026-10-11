@@ -13,6 +13,7 @@
 """
 
 import math
+import os
 import threading
 import time
 import uuid
@@ -28,6 +29,10 @@ from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
 # 飞书通知
 from interaction_module.feishu_bot import FeishuBot
+# 企业微信通知
+from interaction_module.wechat_bot import WeChatBot
+# 周收益聚合与柱状图
+from interaction_module.weekly_chart import aggregate_weekly_pnl_btc, render_weekly_chart_png
 from trade_module.account_tracker import AccountTracker
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
@@ -129,6 +134,8 @@ class TradeEngine:
         self.account_tracker = AccountTracker()
         # 飞书通知机器人
         self.feishu_bot = FeishuBot()
+        # 企业微信通知机器人（交易报告微信推送，未启用时为 no-op）
+        self.wechat_bot = WeChatBot()
 
         # 新增: 创建Exchange实例，支持外部注入
         self.exchange = exchange or create_exchange()
@@ -758,6 +765,67 @@ class TradeEngine:
         report_trades.reverse()
         return report_trades
 
+    def _fetch_report_trades_from_db(
+        self,
+        target_count: int,
+    ) -> List[Dict[str, Any]]:
+        """从本地 position_records 读取最近 target_count 笔已平仓交易。
+
+        单位契约：引擎平仓时按 USD 落库（net_usd = net_btc * close_price，
+        total_fee = fee_btc * close_price，见 close_position），因此
+        BTC 口径精确可还原为 net_pnl/exit_price、total_fee_usd/exit_price。
+
+        Returns:
+            时间升序的报告 dict 列表（与飞书/微信 bot 约定一致）
+        """
+        rows = self.trade_recorder.get_recent_closed_positions(
+            symbol=config.SYMBOL, limit=target_count
+        )
+        trades = []
+        for r in rows:
+            exit_price = float(r.get('exit_price') or 0)
+            if exit_price <= 0:
+                continue  # SQL 已过滤，双保险防除零
+            try:
+                close_time = pd.Timestamp(r['close_time'])
+            except Exception:
+                continue
+            trades.append({
+                'exit_time': close_time,
+                'side': r.get('side'),
+                'entry_price': float(r.get('entry_price') or 0),
+                'exit_price': exit_price,
+                'net_pnl_btc': float(r['net_pnl']) / exit_price,
+                'fee_btc': float(r.get('total_fee_usd') or 0) / exit_price,
+            })
+        trades.reverse()  # DB 为 close_time DESC，报告按时间升序展示
+        return trades
+
+    def _fetch_weekly_pnl_btc(self) -> List[Dict[str, Any]]:
+        """从本地 position_records 聚合最近 N 周净盈亏（北京时间周一为界）。"""
+        weeks = max(1, int(getattr(config, 'TRADE_REPORT_WEEKLY_WEEKS', 8)))
+        now = datetime.utcnow()
+        # 北京时间当前周的周一 00:00，往前推 weeks-1 周，再换算回 UTC 作为查询起点
+        now_bj = now + timedelta(hours=8)
+        oldest_monday_bj = (now_bj - timedelta(days=now_bj.weekday() + 7 * (weeks - 1))).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start_utc = oldest_monday_bj - timedelta(hours=8)
+
+        rows = self.trade_recorder.get_closed_positions_since(
+            start_time=start_utc.isoformat(), symbol=config.SYMBOL
+        )
+        converted = []
+        for r in rows:
+            exit_price = float(r.get('exit_price') or 0)
+            if exit_price <= 0:
+                continue
+            converted.append({
+                'close_time': r['close_time'],
+                'net_pnl_btc': float(r['net_pnl']) / exit_price,
+            })
+        return aggregate_weekly_pnl_btc(converted, weeks=weeks, now=now)
+
     def _fetch_trade_history_report_trades(
         self,
         target_count: Optional[int] = None,
@@ -830,18 +898,38 @@ class TradeEngine:
         self.logger.info(f"   报告固定显示最近 {target_count} 笔交易")
 
         trade_list = []
+        report_source = getattr(config, 'TRADE_REPORT_SOURCE', 'db').lower()
 
-        self.logger.info("   从交易所 API 实时获取历史成交...")
-        try:
-            trade_list = self._fetch_trade_history_report_trades(target_count)
-            self.logger.info(f"   最终报告交易数: {len(trade_list)}")
-            if 0 < len(trade_list) < target_count:
+        if report_source == 'db':
+            self.logger.info("   从本地数据库 position_records 读取历史成交...")
+            try:
+                trade_list = self._fetch_report_trades_from_db(target_count)
+                self.logger.info(f"   最终报告交易数: {len(trade_list)} (来源: db)")
+                if 0 < len(trade_list) < target_count:
+                    self.logger.warning(
+                        f"   本地库平仓记录不足，仅找到 "
+                        f"{len(trade_list)}/{target_count} 笔完整交易"
+                    )
+            except Exception as e:
+                # 仅异常时回退旧 API 路径；空结果不回退（首部署库为空是合法状态，
+                # 可用 scripts/sync_trades_from_binance.py 回补历史）
                 self.logger.warning(
-                    f"   交易所历史不足或开仓成交缺失，仅找到 "
-                    f"{len(trade_list)}/{target_count} 笔完整交易"
+                    f"   本地库读取失败，回退交易所 API 路径: {e}", exc_info=True
                 )
-        except Exception as e:
-            self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
+                report_source = 'api'
+
+        if report_source != 'db':
+            self.logger.info("   从交易所 API 实时获取历史成交...")
+            try:
+                trade_list = self._fetch_trade_history_report_trades(target_count)
+                self.logger.info(f"   最终报告交易数: {len(trade_list)} (来源: api)")
+                if 0 < len(trade_list) < target_count:
+                    self.logger.warning(
+                        f"   交易所历史不足或开仓成交缺失，仅找到 "
+                        f"{len(trade_list)}/{target_count} 笔完整交易"
+                    )
+            except Exception as e:
+                self.logger.warning(f"   从交易所获取历史成交失败: {e}", exc_info=True)
 
         if not trade_list:
             self.logger.info("   暂无交易记录，发送无交易心跳通知")
@@ -859,6 +947,10 @@ class TradeEngine:
                 self.logger.info(f"📊 无交易心跳通知发送结果: {result}")
             except Exception as e:
                 self.logger.warning(f"发送无交易心跳通知失败: {e}", exc_info=True)
+            try:
+                self.wechat_bot.send_no_trade_notification(total_balance_btc=total_balance)
+            except Exception as e:
+                self.logger.warning(f"微信无交易心跳通知失败: {e}", exc_info=True)
             self.logger.info("=" * 60)
             return
 
@@ -880,6 +972,29 @@ class TradeEngine:
             )
         self.logger.info("-" * 50)
 
+        # 周收益聚合与柱状图（失败不影响报告本体）
+        weekly = None
+        try:
+            weekly = self._fetch_weekly_pnl_btc()
+            if weekly:
+                self.logger.info(
+                    f"   周收益聚合: {len(weekly)} 周, 本周净盈亏 "
+                    f"{weekly[-1]['net_pnl_btc']:+.6f} {self.display_asset}"
+                )
+            else:
+                self.logger.info("   周收益聚合为空")
+        except Exception as e:
+            self.logger.warning(f"   周收益聚合失败，跳过周收益区块: {e}", exc_info=True)
+            weekly = None
+
+        chart_path = None
+        if weekly and getattr(config, 'TRADE_REPORT_CHART_ENABLED', True):
+            try:
+                chart_path = render_weekly_chart_png(weekly, self.display_asset)
+            except Exception as e:
+                self.logger.warning(f"   周收益柱状图渲染失败，降级为纯文字: {e}", exc_info=True)
+                chart_path = None
+
         # 发送报告
         self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
         self.logger.info(
@@ -899,14 +1014,31 @@ class TradeEngine:
         try:
             result = self.feishu_bot.send_trade_history_report(
                 trades=trade_list,
-                total_balance_btc=total_balance_eth
+                total_balance_btc=total_balance_eth,
+                weekly=weekly
             )
             self.last_trade_history_report = pd.Timestamp.utcnow()
             self.logger.info(f"📊 交易历史报告发送结果: {result}")
-            self.logger.info("=" * 60)
         except Exception as e:
             self.logger.warning(f"发送交易历史报告失败: {e}", exc_info=True)
-            self.logger.info("=" * 60)
+
+        try:
+            wx_result = self.wechat_bot.send_trade_history_report(
+                trades=trade_list,
+                weekly=weekly,
+                total_balance_btc=total_balance_eth,
+                chart_path=chart_path
+            )
+            self.logger.info(f"📊 微信交易历史报告发送结果: {wx_result}")
+        except Exception as e:
+            self.logger.warning(f"发送微信交易历史报告失败: {e}", exc_info=True)
+
+        if chart_path and os.path.exists(chart_path):
+            try:
+                os.unlink(chart_path)
+            except Exception:
+                pass
+        self.logger.info("=" * 60)
 
     def open_position(self, ts, price: float, row: Dict,
                       side: str, signal_name: str) -> bool:

@@ -9,6 +9,9 @@ numpy==1.26.2
 pandas==2.1.4
 SQLAlchemy==2.0.23
 
+# 周收益柱状图 (Agg 无头渲染)
+matplotlib==3.9.4
+
 # Environment configuration
 python-dotenv==1.0.0
 

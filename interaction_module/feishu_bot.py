@@ -1109,7 +1109,8 @@ class FeishuBot:
     def send_trade_history_report(
         self,
         trades: list,
-        total_balance_btc: float = 0.0
+        total_balance_btc: float = 0.0,
+        weekly: list = None
     ) -> bool:
         """
         发送最近交易历史报告
@@ -1123,6 +1124,8 @@ class FeishuBot:
                 - net_pnl_btc: 净盈亏(基础币种)
                 - fee_btc: 手续费(基础币种)
             total_balance_btc: 当前总余额(基础币种)
+            weekly: 周收益聚合列表(可选, aggregate_weekly_pnl_btc 返回)，
+                    非空时在交易明细后追加文本柱状图区块
         """
         if not self._should_push('trade_report'):
             return False
@@ -1223,6 +1226,7 @@ class FeishuBot:
                         "content": f"**交易明细**\n```\n{trades_content}\n```"
                     }
                 },
+                *self._weekly_card_elements(weekly),
                 {
                     "tag": "hr"
                 },
@@ -1249,6 +1253,26 @@ class FeishuBot:
         }
 
         return self._send_rich_card(card)
+
+    @staticmethod
+    def _weekly_card_elements(weekly: list) -> list:
+        """周收益文本柱状图卡片区块（webhook 自定义机器人不支持图片，用文字柱状图）"""
+        if not weekly:
+            return []
+        try:
+            from .weekly_chart import render_weekly_text_bars
+            text_bars = render_weekly_text_bars(weekly)
+        except Exception:
+            return []
+        if not text_bars:
+            return []
+        return [{
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**周收益(北京时间)**\n```\n{text_bars}\n```"
+            }
+        }]
 
     def send_no_trade_notification(self, total_balance_btc: float = 0.0) -> bool:
         """

@@ -367,6 +367,92 @@ class TradeRecorder:
         """获取未平仓持仓"""
         return self.get_positions(symbol=symbol, status='OPEN', limit=10)
 
+    # 交易报告可用的完整平仓记录过滤条件：
+    # 排除同步脚本补写的 SYNC_CLOSE 行（exit_price/net_pnl 为 NULL）等不完整记录。
+    # 契约：close_time 为 UTC naive ISO-8601 字符串（无时区后缀），字典序即时间序。
+    _CLOSED_REPORTABLE_WHERE = (
+        "status = 'CLOSED' AND exit_price IS NOT NULL AND exit_price > 0 "
+        "AND net_pnl IS NOT NULL AND close_time IS NOT NULL"
+    )
+
+    def get_recent_closed_positions(
+        self,
+        symbol: str = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        最近平仓的持仓（按 close_time 倒序），供交易历史报告使用。
+
+        仅返回可计算盈亏的完整记录（排除 SYNC_CLOSE/空值/零价行）。
+
+        Args:
+            symbol: 交易对（可选）
+            limit: 限制数量
+
+        Returns:
+            List[Dict]: 持仓记录列表，close_time DESC
+        """
+        try:
+            conditions = [self._CLOSED_REPORTABLE_WHERE]
+            params = []
+
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
+
+            sql = f"""
+                SELECT * FROM position_records
+                WHERE {' AND '.join(conditions)}
+                ORDER BY close_time DESC, id DESC
+                LIMIT ?
+            """
+            params.append(limit)
+
+            rows = self.db.fetchall(sql, tuple(params))
+
+            return [dict(row) for row in rows]
+
+        except Exception as e:
+            self.logger.error(f"查询最近平仓持仓失败: {e}")
+            return []
+
+    def get_closed_positions_since(
+        self,
+        start_time: str,
+        symbol: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        close_time >= start_time 的全部完整平仓记录（close_time 升序），周收益聚合用。
+
+        Args:
+            start_time: 起始时间（UTC ISO 字符串，如 '2026-10-05T16:00:00'）
+            symbol: 交易对（可选）
+
+        Returns:
+            List[Dict]: 持仓记录列表，close_time ASC
+        """
+        try:
+            conditions = [self._CLOSED_REPORTABLE_WHERE, "close_time >= ?"]
+            params = [start_time]
+
+            if symbol:
+                conditions.append("symbol = ?")
+                params.append(symbol)
+
+            sql = f"""
+                SELECT * FROM position_records
+                WHERE {' AND '.join(conditions)}
+                ORDER BY close_time ASC, id ASC
+            """
+
+            rows = self.db.fetchall(sql, tuple(params))
+
+            return [dict(row) for row in rows]
+
+        except Exception as e:
+            self.logger.error(f"查询区间平仓持仓失败: {e}")
+            return []
+
     def get_trade_summary(self, start_time: str = None, end_time: str = None) -> Dict[str, Any]:
         """
         获取交易汇总统计
