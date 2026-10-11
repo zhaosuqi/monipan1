@@ -329,7 +329,7 @@ def test_db_report_empty_table(tmp_recorder, monkeypatch):
 
 
 class CapturingBot:
-    """捕获发送参数的 feishu/wechat bot 替身"""
+    """捕获发送参数的 feishu bot 替身"""
 
     def __init__(self):
         self.report_kwargs = None
@@ -351,17 +351,15 @@ class FakeAccountInfo:
 def make_send_engine(recorder, monkeypatch, exchange=None):
     engine = make_db_engine(recorder, monkeypatch, exchange=exchange)
     engine.feishu_bot = CapturingBot()
-    engine.wechat_bot = CapturingBot()
     monkeypatch.setattr('trade_module.trade_engine.config.TRADE_REPORT_SOURCE', 'db')
     monkeypatch.setattr('trade_module.trade_engine.config.TRADE_REPORT_WEEKLY_WEEKS', 8)
-    monkeypatch.setattr('trade_module.trade_engine.config.TRADE_REPORT_CHART_ENABLED', False)
     monkeypatch.setattr('trade_module.trade_engine.config.FEISHU_ENABLED', False)
     monkeypatch.setattr('trade_module.trade_engine.config.FEISHU_WEBHOOK', '')
     return engine
 
 
 def test_send_report_db_source_end_to_end(tmp_recorder, monkeypatch):
-    """db 源端到端：飞书收到 weekly（8 周），微信收到同样数据，且不调用 API 路径"""
+    """db 源端到端：飞书收到交易明细 + weekly（8 周），且不调用 API 路径"""
     now = datetime.utcnow()
     seed_closed_position(tmp_recorder, 0, close_time=now.isoformat(), exit=65100.0)
 
@@ -382,13 +380,6 @@ def test_send_report_db_source_end_to_end(tmp_recorder, monkeypatch):
     # 本周（最后一周）应聚合到这笔成交
     assert feishu_kwargs['weekly'][-1]['trade_count'] == 1
     assert feishu_kwargs['weekly'][-1]['is_current'] is True
-
-    wx_kwargs = engine.wechat_bot.report_kwargs
-    assert wx_kwargs is not None
-    assert len(wx_kwargs['trades']) == 1
-    assert len(wx_kwargs['weekly']) == 8
-    # 测试环境关闭图表 -> chart_path 为 None
-    assert wx_kwargs['chart_path'] is None
     # db 源不应调用交易所 API
     assert exchange.calls == []
 
@@ -414,8 +405,8 @@ def test_send_report_db_exception_falls_back_to_api(tmp_recorder, monkeypatch):
     assert len(exchange.calls) >= 1
 
 
-def test_send_report_no_trade_heartbeat_both_bots(tmp_recorder, monkeypatch):
-    """空库 → 无交易心跳，飞书与微信都被调用"""
+def test_send_report_no_trade_heartbeat(tmp_recorder, monkeypatch):
+    """空库 → 无交易心跳，飞书被调用"""
     exchange = type('Ex', (), {'get_account_info': lambda self, asset: FakeAccountInfo()})()
     engine = make_send_engine(tmp_recorder, monkeypatch, exchange=exchange)
 
@@ -423,8 +414,7 @@ def test_send_report_no_trade_heartbeat_both_bots(tmp_recorder, monkeypatch):
 
     assert engine.feishu_bot.report_kwargs is None
     assert engine.feishu_bot.no_trade_kwargs is not None
-    assert engine.wechat_bot.no_trade_kwargs is not None
-    assert engine.wechat_bot.no_trade_kwargs['total_balance_btc'] == 3.389181
+    assert engine.feishu_bot.no_trade_kwargs['total_balance_btc'] == 3.389181
 
 
 def test_weekly_aggregation_uses_beijing_week(tmp_recorder, monkeypatch):

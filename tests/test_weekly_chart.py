@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""周收益聚合与柱状图渲染测试（纯函数，无 DB/网络）"""
+"""周收益聚合与文本柱状图渲染测试（纯函数，无 DB/网络）"""
 
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +12,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from interaction_module.weekly_chart import (
     aggregate_weekly_pnl_btc,
-    render_weekly_chart_png,
     render_weekly_text_bars,
 )
 
@@ -129,31 +127,3 @@ def test_render_text_bars_empty_and_all_zero():
     ]
     text = render_weekly_text_bars(weekly)
     assert '10-12' in text and '+0.000000' in text
-
-
-def test_render_chart_png_smoke():
-    weekly = [
-        {'label': '10-05', 'net_pnl_btc': -0.02, 'trade_count': 1, 'is_current': False},
-        {'label': '10-12', 'net_pnl_btc': 0.05, 'trade_count': 2, 'is_current': True},
-    ]
-    path = render_weekly_chart_png(weekly)
-    try:
-        assert path is not None
-        assert os.path.exists(path)
-        assert os.path.getsize(path) > 1024
-    finally:
-        if path and os.path.exists(path):
-            os.unlink(path)
-
-
-def test_render_chart_png_returns_none_without_matplotlib(monkeypatch):
-    """无 matplotlib 时返回 None，不抛异常（报告降级为纯文字）"""
-    monkeypatch.setitem(sys.modules, 'matplotlib', None)
-    weekly = [
-        {'label': '10-12', 'net_pnl_btc': 0.05, 'trade_count': 1, 'is_current': True},
-    ]
-    assert render_weekly_chart_png(weekly) is None
-
-
-def test_render_chart_png_empty_input():
-    assert render_weekly_chart_png([]) is None

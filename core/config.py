@@ -340,16 +340,10 @@ class Config:
         # 交易历史报告显示最近几次交易
         self.TRADE_HISTORY_REPORT_COUNT = int(os.getenv('TRADE_HISTORY_REPORT_COUNT', '10'))
 
-        # 企业微信群机器人（交易报告微信推送）
-        self.WECHAT_WEBHOOK = os.getenv('WECHAT_WEBHOOK', '')
-        self.WECHAT_ENABLED = os.getenv('WECHAT_ENABLED', '0').lower() in ('1', 'true', 'yes')
-
         # 交易报告数据源: db=本地position_records(默认), api=币安API重建(旧行为, 回退用)
         self.TRADE_REPORT_SOURCE = os.getenv('TRADE_REPORT_SOURCE', 'db').lower()
         # 交易报告周收益统计周数（北京时间周一为界）
         self.TRADE_REPORT_WEEKLY_WEEKS = int(os.getenv('TRADE_REPORT_WEEKLY_WEEKS', '8'))
-        # 周收益柱状图开关 (需要matplotlib, 0=仅文本柱状图)
-        self.TRADE_REPORT_CHART_ENABLED = os.getenv('TRADE_REPORT_CHART_ENABLED', '1').lower() in ('1', 'true', 'yes')
 
         # Web服务
         self.WEB_HOST = os.getenv('WEB_HOST', '0.0.0.0')

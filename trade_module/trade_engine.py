@@ -13,7 +13,6 @@
 """
 
 import math
-import os
 import threading
 import time
 import uuid
@@ -29,10 +28,8 @@ from core.logger import get_logger
 from exchange_layer import ExchangeType, create_exchange
 # 飞书通知
 from interaction_module.feishu_bot import FeishuBot
-# 企业微信通知
-from interaction_module.wechat_bot import WeChatBot
-# 周收益聚合与柱状图
-from interaction_module.weekly_chart import aggregate_weekly_pnl_btc, render_weekly_chart_png
+# 周收益聚合
+from interaction_module.weekly_chart import aggregate_weekly_pnl_btc
 from trade_module.account_tracker import AccountTracker
 from trade_module.local_order import LocalOrderManager
 from trade_module.local_order import Order as LocalOrder
@@ -134,8 +131,6 @@ class TradeEngine:
         self.account_tracker = AccountTracker()
         # 飞书通知机器人
         self.feishu_bot = FeishuBot()
-        # 企业微信通知机器人（交易报告微信推送，未启用时为 no-op）
-        self.wechat_bot = WeChatBot()
 
         # 新增: 创建Exchange实例，支持外部注入
         self.exchange = exchange or create_exchange()
@@ -947,10 +942,6 @@ class TradeEngine:
                 self.logger.info(f"📊 无交易心跳通知发送结果: {result}")
             except Exception as e:
                 self.logger.warning(f"发送无交易心跳通知失败: {e}", exc_info=True)
-            try:
-                self.wechat_bot.send_no_trade_notification(total_balance_btc=total_balance)
-            except Exception as e:
-                self.logger.warning(f"微信无交易心跳通知失败: {e}", exc_info=True)
             self.logger.info("=" * 60)
             return
 
@@ -972,7 +963,7 @@ class TradeEngine:
             )
         self.logger.info("-" * 50)
 
-        # 周收益聚合与柱状图（失败不影响报告本体）
+        # 周收益聚合（失败不影响报告本体）
         weekly = None
         try:
             weekly = self._fetch_weekly_pnl_btc()
@@ -986,14 +977,6 @@ class TradeEngine:
         except Exception as e:
             self.logger.warning(f"   周收益聚合失败，跳过周收益区块: {e}", exc_info=True)
             weekly = None
-
-        chart_path = None
-        if weekly and getattr(config, 'TRADE_REPORT_CHART_ENABLED', True):
-            try:
-                chart_path = render_weekly_chart_png(weekly, self.display_asset)
-            except Exception as e:
-                self.logger.warning(f"   周收益柱状图渲染失败，降级为纯文字: {e}", exc_info=True)
-                chart_path = None
 
         # 发送报告
         self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
@@ -1019,26 +1002,10 @@ class TradeEngine:
             )
             self.last_trade_history_report = pd.Timestamp.utcnow()
             self.logger.info(f"📊 交易历史报告发送结果: {result}")
+            self.logger.info("=" * 60)
         except Exception as e:
             self.logger.warning(f"发送交易历史报告失败: {e}", exc_info=True)
-
-        try:
-            wx_result = self.wechat_bot.send_trade_history_report(
-                trades=trade_list,
-                weekly=weekly,
-                total_balance_btc=total_balance_eth,
-                chart_path=chart_path
-            )
-            self.logger.info(f"📊 微信交易历史报告发送结果: {wx_result}")
-        except Exception as e:
-            self.logger.warning(f"发送微信交易历史报告失败: {e}", exc_info=True)
-
-        if chart_path and os.path.exists(chart_path):
-            try:
-                os.unlink(chart_path)
-            except Exception:
-                pass
-        self.logger.info("=" * 60)
+            self.logger.info("=" * 60)
 
     def open_position(self, ts, price: float, row: Dict,
                       side: str, signal_name: str) -> bool:
