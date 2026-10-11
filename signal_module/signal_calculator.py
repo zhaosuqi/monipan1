@@ -1115,6 +1115,7 @@ class SignalCalculator:
             return True
 
         # ========== 15分钟指标检查 ==========
+        #❌ [2026-09-15 11:29:00] 空头信号被拒绝，原因: HIST15: 45.56，T0_HIST15_LIMIT=9999, T0_HIST15_LIMIT_MIN=15
         # HIST15限制 (空头符号相反)
         if hist15 < -1 * config.T0_HIST15_LIMIT or hist15 > -1 * config.T0_HIST15_LIMIT_MIN:
             is_short = False
