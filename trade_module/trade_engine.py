@@ -982,7 +982,7 @@ class TradeEngine:
         self.logger.info(f"   准备发送飞书报告，交易数: {len(trade_list)}")
         self.logger.info(
             f"   飞书配置: FEISHU_ENABLED={config.FEISHU_ENABLED}, "
-            f"WEBHOOK长度={len(config.FEISHU_WEBHOOK) if config.FEISHU_WEBHOOK else 0}"
+            f"WEBHOOK数量={len(getattr(self.feishu_bot, 'webhooks', None) or [])}"
         )
 
         # 从交易所API获取真实账户余额

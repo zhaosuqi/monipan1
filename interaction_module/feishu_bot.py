@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """飞书通知机器人 - 支持开仓、平仓、止盈等交易事件通知"""
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import requests
 
 from core.config import config
 from core.logger import get_logger
+
+
+def parse_webhooks(raw: str) -> List[str]:
+    """解析逗号分隔的 webhook 配置，返回地址列表（每条消息推送到全部地址）。"""
+    return [w.strip() for w in (raw or '').split(',') if w.strip()]
 
 
 class FeishuBot:
@@ -37,6 +42,8 @@ class FeishuBot:
     def __init__(self):
         self.logger = get_logger('interaction_module.feishu')
         self.webhook = config.FEISHU_WEBHOOK
+        # 支持逗号分隔多个 webhook，每条消息推送到全部地址（实现多群同推）
+        self.webhooks = parse_webhooks(self.webhook)
         self.enabled = config.FEISHU_ENABLED
         self.display_asset = self._resolve_display_asset(getattr(config, 'SYMBOL', ''))
         self.push_freq = getattr(config, 'FEISHU_PUSH_FREQ', self.PUSH_FREQ_HIGH).lower()
@@ -78,57 +85,52 @@ class FeishuBot:
         if not self.enabled:
             self.logger.debug("飞书未启用 (FEISHU_ENABLED=0)，跳过发送")
             return False
-        if not self.webhook:
+
+        data = {
+            "msg_type": "text",
+            "content": {"text": message}
+        }
+        return self._post_to_all_webhooks(data, desc='文本消息')
+
+    def _post_to_all_webhooks(self, data: Dict, desc: str = '消息') -> bool:
+        """POST 到全部 webhook 地址（逗号分隔多地址时逐条推送）。
+
+        单个地址失败不影响其他地址；全部成功才返回 True。
+        """
+        if not self.webhooks:
             self.logger.warning("飞书Webhook未配置 (FEISHU_WEBHOOK为空)，跳过发送")
             return False
 
-        try:
-            data = {
-                "msg_type": "text",
-                "content": {"text": message}
-            }
-
-            response = requests.post(self.webhook, json=data, timeout=5)
-
-            if response.status_code == 200:
-                self.logger.debug(f"飞书消息发送成功: {message[:50]}")
-                return True
-            else:
-                self.logger.error(f"飞书消息发送失败: {response.status_code}")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"飞书消息发送异常: {e}")
-            return False
-
+        all_ok = True
+        total = len(self.webhooks)
+        for idx, webhook in enumerate(self.webhooks, 1):
+            target = f"webhook {idx}/{total}"
+            try:
+                response = requests.post(webhook, json=data, timeout=5)
+                if response.status_code == 200:
+                    self.logger.debug(f"飞书{desc}发送成功 ({target})")
+                else:
+                    self.logger.error(
+                        f"飞书{desc}发送失败 ({target}): "
+                        f"{response.status_code}, {response.text}"
+                    )
+                    all_ok = False
+            except Exception as e:
+                self.logger.error(f"飞书{desc}发送异常 ({target}): {e}")
+                all_ok = False
+        return all_ok
 
     def _send_rich_card(self, card: Dict) -> bool:
         """发送富文本卡片消息"""
         if not self.enabled:
             self.logger.debug("飞书未启用 (FEISHU_ENABLED=0)，跳过发送")
             return False
-        if not self.webhook:
-            self.logger.warning("飞书Webhook未配置 (FEISHU_WEBHOOK为空)，跳过发送")
-            return False
 
-        try:
-            data = {
-                "msg_type": "interactive",
-                "card": card
-            }
-
-            response = requests.post(self.webhook, json=data, timeout=5)
-
-            if response.status_code == 200:
-                self.logger.debug("飞书卡片消息发送成功")
-                return True
-            else:
-                self.logger.error(f"飞书卡片发送失败: {response.status_code}, {response.text}")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"飞书卡片发送异常: {e}")
-            return False
+        data = {
+            "msg_type": "interactive",
+            "card": card
+        }
+        return self._post_to_all_webhooks(data, desc='卡片消息')
 
     def send_open_signal_detected_notification(
         self,

@@ -27,6 +27,7 @@ from flask import (Flask, jsonify, redirect, render_template, request, session,
 
 from core.config import config
 from core.logger import get_logger
+from interaction_module.feishu_bot import parse_webhooks
 
 logger = get_logger('kline_viewer')
 
@@ -150,20 +151,27 @@ def send_verification_code():
 
     # 通过飞书发送验证码（强制发送，不依赖 FEISHU_ENABLED 开关）
     # 优先使用登录专用 webhook（FEISHU_WEBHOOK_LOGIN，可配置为小群/单人群避免验证码暴露在大群），
-    # 未配置时回退到通用 FEISHU_WEBHOOK
+    # 未配置时回退到通用 FEISHU_WEBHOOK（支持逗号分隔多地址，任一地址送达即视为成功）
     message = f"【验证码】您的登录验证码是：{code}，有效期2分钟，请勿泄露给他人。"
 
     # 直接调用飞书 API 发送
     success = False
-    webhook = os.environ.get('FEISHU_WEBHOOK_LOGIN', '').strip() or config.FEISHU_WEBHOOK
-    if webhook:
+    login_webhook = os.environ.get('FEISHU_WEBHOOK_LOGIN', '').strip()
+    if login_webhook:
+        webhooks = [login_webhook]
+    else:
+        webhooks = parse_webhooks(config.FEISHU_WEBHOOK)
+    for wh in webhooks:
         try:
             response = requests.post(
-                webhook,
+                wh,
                 json={"msg_type": "text", "content": {"text": message}},
                 timeout=5
             )
-            success = response.status_code == 200
+            if response.status_code == 200:
+                success = True
+            else:
+                logger.error(f"飞书发送验证码失败: {response.status_code}")
         except Exception as e:
             logger.error(f"飞书发送失败: {e}")
 
