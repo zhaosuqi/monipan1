@@ -62,3 +62,25 @@ def test_signal_calculation_resyncs_stale_dea1d_mean_2_window(monkeypatch):
     calc.calculate_open_signal(row)
 
     assert tracker.data["dea1d_2"]["window_minutes"] == 120
+
+
+def test_hot_reload_updates_new_entry_filter_params(monkeypatch):
+    updates = {
+        "price_change_mode": "func",
+        "price_change_func_window_min": 7,
+        "price_change_func_window_max": 28,
+        "price_change_func_steps": 6,
+        "round_level_step": 5000,
+        "round_level_dev_ratio": 0.004,
+        "round_level_single_side": False,
+    }
+    for key in updates:
+        attr_name = key.upper()
+        monkeypatch.setattr(config, attr_name, getattr(config, attr_name))
+
+    reloader = ConfigHotReloader.__new__(ConfigHotReloader)
+    applied = reloader._apply_params(updates)
+
+    assert applied == len(updates)
+    for key, expected in updates.items():
+        assert getattr(config, key.upper()) == expected

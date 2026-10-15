@@ -242,6 +242,10 @@ class Config:
         self.PRICE_CHANGE_COUNT_F = int(os.getenv('PRICE_CHANGE_COUNT_F', '0'))
         self.PRICE_CHANGE_LIMIT_G = float(os.getenv('PRICE_CHANGE_LIMIT_G', '0'))
         self.PRICE_CHANGE_COUNT_G = int(os.getenv('PRICE_CHANGE_COUNT_G', '0'))
+        self.PRICE_CHANGE_MODE = os.getenv('PRICE_CHANGE_MODE', 'group')
+        self.PRICE_CHANGE_FUNC_WINDOW_MIN = int(os.getenv('PRICE_CHANGE_FUNC_WINDOW_MIN', '5'))
+        self.PRICE_CHANGE_FUNC_WINDOW_MAX = int(os.getenv('PRICE_CHANGE_FUNC_WINDOW_MAX', '20'))
+        self.PRICE_CHANGE_FUNC_STEPS = int(os.getenv('PRICE_CHANGE_FUNC_STEPS', '10'))
         self.M_PRICE_CHANGE = float(os.getenv('M_PRICE_CHANGE', '0.0025'))
         self.M_PRICE_CHANGE_MINUTES = int(os.getenv('M_PRICE_CHANGE_MINUTES', '1'))    # A组回溯分钟数，1=前一分钟，2=前两分钟，以此类推
         self.M_PRICE_CHANGE_B = float(os.getenv('M_PRICE_CHANGE_B', '0.013'))        # B组: 分钟前后价格变化率，防止插针。
@@ -270,6 +274,11 @@ class Config:
         self.SAFE_RANGE_WINDOW_HOURS_C = float(os.getenv('SAFE_RANGE_WINDOW_HOURS_C', '0'))  # C组：向前回溯窗口（小时）
         self.SAFE_RANGE_SWING_RATIO_C = float(os.getenv('SAFE_RANGE_SWING_RATIO_C', '0'))    # C组：摆动幅度
         self.SAFE_RANGE_NEAR_RATIO_C = float(os.getenv('SAFE_RANGE_NEAR_RATIO_C', '0'))      # C组：锚定点附近范围
+
+        # 整数关口过滤
+        self.ROUND_LEVEL_STEP = int(os.getenv('ROUND_LEVEL_STEP', '10000'))
+        self.ROUND_LEVEL_DEV_RATIO = float(os.getenv('ROUND_LEVEL_DEV_RATIO', '0'))
+        self.ROUND_LEVEL_SINGLE_SIDE = os.getenv('ROUND_LEVEL_SINGLE_SIDE', 'true').lower() in ('1', 'true', 'yes')
 
         # 4H特殊参数
         self.HIST4_EXTREME_LIMIT = float(os.getenv('HIST4_EXTREME_LIMIT', '9999'))

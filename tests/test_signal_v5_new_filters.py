@@ -9,10 +9,12 @@ V5.0 新增过滤逻辑测试（对齐 bigtree/macd_refactor.py）：
 - ENABLE_MA5_MA10 已停用
 """
 
+import math
 import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -21,8 +23,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.config import config
 from signal_module.signal_calculator import (
     SignalCalculator,
+    _build_func_price_change_checks,
     _find_safe_range_anchor,
     _pass_safe_range,
+    price_change_limit,
+    round_level_block,
 )
 
 
@@ -50,6 +55,13 @@ def _permissive_config(monkeypatch):
         monkeypatch.setattr(config, f"M_PRICE_CHANGE_MINUTES{suffix}", 0)
         monkeypatch.setattr(config, f"PRICE_CHANGE_COUNT{suffix}", 0)
         monkeypatch.setattr(config, f"PRICE_CHANGE_LIMIT{suffix}", 0.0)
+    monkeypatch.setattr(config, "PRICE_CHANGE_MODE", "group")
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MIN", 5)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MAX", 20)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_STEPS", 0)
+    monkeypatch.setattr(config, "ROUND_LEVEL_STEP", 10000)
+    monkeypatch.setattr(config, "ROUND_LEVEL_DEV_RATIO", 0.0)
+    monkeypatch.setattr(config, "ROUND_LEVEL_SINGLE_SIDE", True)
     for suffix in ("", "_B", "_C"):
         monkeypatch.setattr(config, f"SAFE_RANGE_WINDOW_HOURS{suffix}", 0.0)
         monkeypatch.setattr(config, f"SAFE_RANGE_SWING_RATIO{suffix}", 0.0)
@@ -244,6 +256,215 @@ def test_price_change_window_group_g_is_wired(monkeypatch):
     assert ok is False
 
 
+# ==================== PRICE_CHANGE 函数模式 ====================
+
+def _set_func_mode(monkeypatch, w_min=5, w_max=20, steps=10):
+    monkeypatch.setattr(config, "PRICE_CHANGE_MODE", "func")
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MIN", w_min)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MAX", w_max)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_STEPS", steps)
+
+
+def test_price_change_limit_uses_current_formula():
+    for window in (1, 5, 20):
+        expected = 0.003584 * window ** 0.261502 * math.log(window) ** 0.808209
+        assert price_change_limit(window) == pytest.approx(expected)
+    assert price_change_limit(10) > price_change_limit(5)
+
+
+def test_func_checks_default_interpolation(monkeypatch):
+    _set_func_mode(monkeypatch)
+    checks = _build_func_price_change_checks()
+    assert [item[1] for item in checks] == [5, 7, 8, 10, 12, 13, 15, 17, 18, 20]
+    for _, count, limit in checks:
+        assert limit == pytest.approx(price_change_limit(count))
+
+
+def test_func_checks_steps_one_uses_min(monkeypatch):
+    _set_func_mode(monkeypatch, w_min=5, w_max=20, steps=1)
+    checks = _build_func_price_change_checks()
+    assert [item[1] for item in checks] == [5]
+
+
+def test_func_checks_reversed_min_max(monkeypatch):
+    _set_func_mode(monkeypatch, w_min=20, w_max=5, steps=2)
+    assert [item[1] for item in _build_func_price_change_checks()] == [20, 5]
+
+
+def test_func_checks_dedupes_windows(monkeypatch):
+    _set_func_mode(monkeypatch, w_min=1, w_max=2, steps=10)
+    checks = _build_func_price_change_checks()
+    assert [item[1] for item in checks] == [1, 2]
+    assert checks[0][2] == 0
+
+
+@pytest.mark.parametrize("attr,value", [
+    ("PRICE_CHANGE_FUNC_STEPS", 0),
+    ("PRICE_CHANGE_FUNC_STEPS", -1),
+    ("PRICE_CHANGE_FUNC_STEPS", "bad"),
+    ("PRICE_CHANGE_FUNC_WINDOW_MIN", 0),
+    ("PRICE_CHANGE_FUNC_WINDOW_MAX", 0),
+])
+def test_func_checks_invalid_params_return_empty(monkeypatch, attr, value):
+    _set_func_mode(monkeypatch)
+    monkeypatch.setattr(config, attr, value)
+    assert _build_func_price_change_checks() == []
+
+
+def test_func_mode_blocks_long_when_step_hits(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_func_mode(monkeypatch, w_min=5, w_max=5, steps=1)
+    calc = _make_calc()
+    state_prices = pd.Series([10000, 9950, 9900, 9800, 10000])
+    ok, _ = calc._check_long_signal(
+        *_long_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is False
+
+
+def test_func_mode_blocks_short_when_step_hits(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_func_mode(monkeypatch, w_min=5, w_max=5, steps=1)
+    calc = _make_calc()
+    state_prices = pd.Series([10000, 10050, 10100, 10200, 10000])
+    ok, _ = calc._check_short_signal(
+        *_short_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is False
+
+
+def test_func_mode_all_steps_pass_allows_long(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_func_mode(monkeypatch, w_min=3, w_max=10, steps=3)
+    calc = _make_calc()
+    state_prices = pd.Series([10000.0] * 12)
+    ok, _ = calc._check_long_signal(
+        *_long_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is True
+
+
+def test_func_mode_disabled_steps_allows_long(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_func_mode(monkeypatch, w_min=5, w_max=5, steps=0)
+    calc = _make_calc()
+    state_prices = pd.Series([10000, 9950, 9900, 9800, 10000])
+    ok, _ = calc._check_long_signal(
+        *_long_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is True
+
+
+def test_group_mode_ignores_func_params(monkeypatch):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MIN", 5)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_WINDOW_MAX", 5)
+    monkeypatch.setattr(config, "PRICE_CHANGE_FUNC_STEPS", 1)
+    calc = _make_calc()
+    state_prices = pd.Series([10000, 9950, 9900, 9800, 10000])
+    ok, _ = calc._check_long_signal(
+        *_long_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is True
+
+
+def test_func_mode_ignores_group_params(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_func_mode(monkeypatch, steps=0)
+    monkeypatch.setattr(config, "PRICE_CHANGE_COUNT", 5)
+    monkeypatch.setattr(config, "PRICE_CHANGE_LIMIT", 0.01)
+    calc = _make_calc()
+    state_prices = pd.Series([10000, 9950, 9900, 9800, 10000])
+    ok, _ = calc._check_long_signal(
+        *_long_args(_row(10000.0, 10000.0, 10000.0), [], state_prices)
+    )
+    assert ok is True
+
+
+# ==================== 整数关口过滤 ====================
+
+def test_round_level_single_side_boundaries():
+    assert round_level_block(79760, 'long', 0.003) == 80000
+    assert round_level_block(80000, 'long', 0.003) == 80000
+    assert round_level_block(79759, 'long', 0.003) is None
+    assert round_level_block(80100, 'long', 0.003) is None
+    assert round_level_block(80000, 'short', 0.003) == 80000
+    assert round_level_block(80240, 'short', 0.003) == 80000
+    assert round_level_block(80241, 'short', 0.003) is None
+    assert round_level_block(79770, 'short', 0.003) is None
+    assert round_level_block(89730, 'long', 0.003) == 90000
+    assert round_level_block(90270, 'short', 0.003) == 90000
+
+
+def test_round_level_double_side_blocks_both_directions():
+    for side in ('long', 'short'):
+        for price in (79760, 79770, 80000, 80100, 80240):
+            assert round_level_block(price, side, 0.003, single_side=False) == 80000
+        for price in (79759, 80241):
+            assert round_level_block(price, side, 0.003, single_side=False) is None
+
+
+def test_round_level_disabled_and_invalid_inputs():
+    assert round_level_block(79770, 'long', 0) is None
+    assert round_level_block(79770, 'long', -0.1) is None
+    assert round_level_block(0, 'long', 0.003) is None
+    assert round_level_block(-80000, 'short', 0.003) is None
+    assert round_level_block(float('nan'), 'long', 0.003) is None
+    assert round_level_block(float('inf'), 'long', 0.003) is None
+    assert round_level_block(79770, 'long', float('nan')) is None
+    assert round_level_block('bad', 'long', 0.003) is None
+    assert round_level_block(79770, 'long', 0.003, step=0) is None
+
+
+def test_round_level_signal_single_side(monkeypatch):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, "ROUND_LEVEL_DEV_RATIO", 0.003)
+    calc = _make_calc()
+    history = []
+    ok, _ = calc._check_long_signal(*_long_args(_row(79770.0, 79770.0, 79770.0), history))
+    assert ok is False
+    ok, _ = calc._check_long_signal(*_long_args(_row(80100.0, 80100.0, 80100.0), history))
+    assert ok is True
+    ok, _ = calc._check_short_signal(*_short_args(_row(80100.0, 80100.0, 80100.0), history))
+    assert ok is False
+    ok, _ = calc._check_short_signal(*_short_args(_row(79770.0, 79770.0, 79770.0), history))
+    assert ok is True
+
+
+def test_round_level_signal_double_side(monkeypatch):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, "ROUND_LEVEL_DEV_RATIO", 0.003)
+    monkeypatch.setattr(config, "ROUND_LEVEL_SINGLE_SIDE", False)
+    calc = _make_calc()
+    ok, _ = calc._check_long_signal(*_long_args(_row(80100.0, 80100.0, 80100.0), []))
+    assert ok is False
+    ok, _ = calc._check_short_signal(*_short_args(_row(79770.0, 79770.0, 79770.0), []))
+    assert ok is False
+    ok, _ = calc._check_long_signal(*_long_args(_row(80241.0, 80241.0, 80241.0), []))
+    assert ok is True
+    ok, _ = calc._check_short_signal(*_short_args(_row(79759.0, 79759.0, 79759.0), []))
+    assert ok is True
+
+
+@pytest.mark.parametrize("raw_value,expected", [("false", False), ("true", True)])
+def test_round_level_signal_string_boolean(monkeypatch, raw_value, expected):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, "ROUND_LEVEL_DEV_RATIO", 0.003)
+    monkeypatch.setattr(config, "ROUND_LEVEL_SINGLE_SIDE", raw_value)
+    calc = _make_calc()
+    ok, _ = calc._check_long_signal(*_long_args(_row(80100.0, 80100.0, 80100.0), []))
+    assert ok is expected
+
+
+def test_round_level_disabled_does_not_change_signal(monkeypatch):
+    _permissive_config(monkeypatch)
+    calc = _make_calc()
+    ok, _ = calc._check_long_signal(*_long_args(_row(79770.0, 79770.0, 79770.0), []))
+    assert ok is True
+    ok, _ = calc._check_short_signal(*_short_args(_row(80100.0, 80100.0, 80100.0), []))
+    assert ok is True
+
+
 # ==================== ENABLE_MA5_MA10 已停用 ====================
 
 def test_enable_ma5_ma10_no_longer_blocks(monkeypatch):
@@ -269,5 +490,22 @@ def test_get_signal_params_exports_new_keys():
         "safe_range_window_hours", "safe_range_swing_ratio", "safe_range_near_ratio",
         "safe_range_window_hours_b", "safe_range_swing_ratio_b", "safe_range_near_ratio_b",
         "safe_range_window_hours_c", "safe_range_swing_ratio_c", "safe_range_near_ratio_c",
+        "price_change_mode", "price_change_func_window_min",
+        "price_change_func_window_max", "price_change_func_steps",
+        "round_level_step", "round_level_dev_ratio", "round_level_single_side",
     ):
         assert key in params, f"缺少导出参数: {key}"
+
+
+def test_trade_params_template_contains_new_filter_inputs():
+    template = (PROJECT_ROOT / "web" / "templates" / "trade_params.html").read_text(encoding="utf-8")
+    for input_name in (
+        "price_change_mode",
+        "price_change_func_window_min",
+        "price_change_func_window_max",
+        "price_change_func_steps",
+        "round_level_step",
+        "round_level_dev_ratio",
+        "round_level_single_side",
+    ):
+        assert f'name="{input_name}"' in template

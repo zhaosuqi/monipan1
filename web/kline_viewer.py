@@ -908,6 +908,10 @@ def api_config():
                 ),
             },
             '价格变化参数': {
+                '价格判断模式': p.get('price_change_mode', 'group'),
+                '函数窗口最小分钟': p.get('price_change_func_window_min', 5),
+                '函数窗口最大分钟': p.get('price_change_func_window_max', 20),
+                '函数过滤切分次数': p.get('price_change_func_steps', 10),
                 '价格变化限制A': p.get('price_change_limit', 0.02),
                 '价格变化计数A': p.get('price_change_count', 5),
                 '价格变化限制B': p.get('price_change_limit_b', 0.025),
@@ -928,6 +932,11 @@ def api_config():
                 '分钟数D': p.get('m_price_change_minutes_d', 30),
                 '分钟价格变化E': p.get('m_price_change_e', 0.9999),
                 '分钟数E': p.get('m_price_change_minutes_e', 60),
+            },
+            '整数关口过滤': {
+                '固定关口间隔': p.get('round_level_step', 10000),
+                '关口偏差比例': p.get('round_level_dev_ratio', 0.0),
+                '单边受限': p.get('round_level_single_side', True),
             },
             'T1参数': {
                 'T0_HIST变化': p.get('t1_t0_hist_change', 15),

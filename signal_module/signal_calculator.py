@@ -8,6 +8,7 @@
 """
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -123,6 +124,99 @@ def _pass_safe_range(history_rows: List[Dict], row: Dict, side_text: str) -> boo
             )
             return False
     return True
+
+
+def price_change_limit(window_size: int) -> float:
+    """根据窗口大小计算价格变化阈值。"""
+    return 0.003584 * window_size ** 0.261502 * (math.log(window_size)) ** 0.808209
+
+
+def _build_func_price_change_checks():
+    """函数模式：在窗口范围内均分档位，并按窗口大小计算阈值。"""
+    def _i(name, default=0):
+        try:
+            return int(getattr(config, name, default))
+        except Exception:
+            return 0
+
+    steps = _i("PRICE_CHANGE_FUNC_STEPS")
+    w_min = _i("PRICE_CHANGE_FUNC_WINDOW_MIN")
+    w_max = _i("PRICE_CHANGE_FUNC_WINDOW_MAX")
+    if steps <= 0 or w_min <= 0 or w_max <= 0:
+        return []
+    if steps == 1:
+        fracs = [0.0]
+    else:
+        fracs = [k / (steps - 1) for k in range(steps)]
+    checks = []
+    seen = set()
+    for frac in fracs:
+        count = int(round(w_min + (w_max - w_min) * frac))
+        if count <= 0 or count in seen:
+            continue
+        seen.add(count)
+        checks.append((f"F{len(checks) + 1}", count, price_change_limit(count)))
+    return checks
+
+
+def round_level_block(price, side, dev_ratio, step=10000, single_side=True):
+    """价格处于整数关口禁区时返回关口价 N，否则返回 None。"""
+    try:
+        p = float(price)
+        dev = float(dev_ratio)
+        st = float(step)
+    except Exception:
+        return None
+    if not (np.isfinite(p) and np.isfinite(dev) and np.isfinite(st)):
+        return None
+    if p <= 0 or dev <= 0 or st <= 0:
+        return None
+    m = p / st
+    eps = 1e-9
+    tol = st * 1e-9
+    if side == 'long' or not single_side:
+        n_high = math.ceil(m - eps) * st
+        if n_high * (1 - dev) - tol <= p <= n_high + tol:
+            return n_high
+    if side == 'short' or not single_side:
+        n_low = math.floor(m + eps) * st
+        if n_low - tol <= p <= n_low * (1 + dev) + tol:
+            return n_low
+    return None
+
+
+def _pass_round_level(row: Dict, side_text: str) -> bool:
+    """整数关口过滤：单边时关口下方禁多、上方禁空；双边时两侧均禁。"""
+    try:
+        dev_ratio = float(getattr(config, "ROUND_LEVEL_DEV_RATIO", 0))
+    except Exception:
+        dev_ratio = 0.0
+    if dev_ratio <= 0:
+        return True
+
+    side = 'long' if side_text == "多头" else 'short'
+    step = getattr(config, "ROUND_LEVEL_STEP", 10000)
+    single_raw = getattr(config, "ROUND_LEVEL_SINGLE_SIDE", True)
+    if isinstance(single_raw, str):
+        single_side = single_raw.strip().lower() in ("true", "1", "on", "yes")
+    else:
+        single_side = bool(single_raw)
+
+    level = round_level_block(row['close'], side, dev_ratio, step, single_side)
+    if level is None:
+        return True
+    logger.debug(
+        "DEBUG: 跳过%s开仓 due to round level at %s, close=%s, level=%s, "
+        "dev_ratio=%s, step=%s, single_side=%s",
+        side_text,
+        row.get('close_time'),
+        row['close'],
+        level,
+        dev_ratio,
+        step,
+        single_side,
+    )
+    return False
 
 
 @dataclass
@@ -589,15 +683,19 @@ class SignalCalculator:
             return True
 
         def _pass_multi_price_change_window(side_text: str) -> bool:
-            checks = [
-                ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
-                ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
-                ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
-                ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
-                ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
-                ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
-                ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
-            ]
+            _pc_mode = str(getattr(config, "PRICE_CHANGE_MODE", "group")).strip().lower()
+            if _pc_mode == "func":
+                checks = _build_func_price_change_checks()
+            else:
+                checks = [
+                    ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
+                    ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
+                    ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
+                    ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
+                    ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+                    ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
+                    ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
+                ]
             for group_name, raw_count, raw_limit in checks:
                 try:
                     count = int(raw_count)
@@ -939,6 +1037,10 @@ class SignalCalculator:
             is_long = False
             reasons.append("安全范围检查未通过")
 
+        if is_long and not _pass_round_level(row, "多头"):
+            is_long = False
+            reasons.append("整数关口过滤未通过")
+
         # 对齐 V5.0：成交量 MA5/MA10 过滤已停用（注释保留，与 macd_refactor.py 一致）
         # if is_long and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
         #     if row.get('vol_ma5') < row.get('vol_ma10'):
@@ -1034,15 +1136,19 @@ class SignalCalculator:
             return True
 
         def _pass_multi_price_change_window(side_text: str) -> bool:
-            checks = [
-                ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
-                ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
-                ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
-                ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
-                ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
-                ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
-                ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
-            ]
+            _pc_mode = str(getattr(config, "PRICE_CHANGE_MODE", "group")).strip().lower()
+            if _pc_mode == "func":
+                checks = _build_func_price_change_checks()
+            else:
+                checks = [
+                    ("A", getattr(config, "PRICE_CHANGE_COUNT", 0), getattr(config, "PRICE_CHANGE_LIMIT", 0)),
+                    ("B", getattr(config, "PRICE_CHANGE_COUNT_B", 0), getattr(config, "PRICE_CHANGE_LIMIT_B", 0)),
+                    ("C", getattr(config, "PRICE_CHANGE_COUNT_C", 0), getattr(config, "PRICE_CHANGE_LIMIT_C", 0)),
+                    ("D", getattr(config, "PRICE_CHANGE_COUNT_D", 0), getattr(config, "PRICE_CHANGE_LIMIT_D", 0)),
+                    ("E", getattr(config, "PRICE_CHANGE_COUNT_E", 0), getattr(config, "PRICE_CHANGE_LIMIT_E", 0)),
+                    ("F", getattr(config, "PRICE_CHANGE_COUNT_F", 0), getattr(config, "PRICE_CHANGE_LIMIT_F", 0)),
+                    ("G", getattr(config, "PRICE_CHANGE_COUNT_G", 0), getattr(config, "PRICE_CHANGE_LIMIT_G", 0)),
+                ]
             for group_name, raw_count, raw_limit in checks:
                 try:
                     count = int(raw_count)
@@ -1354,6 +1460,10 @@ class SignalCalculator:
             is_short = False
             reasons.append("安全范围检查未通过")
 
+        if is_short and not _pass_round_level(row, "空头"):
+            is_short = False
+            reasons.append("整数关口过滤未通过")
+
         # 对齐 V5.0：成交量 MA5/MA10 过滤已停用（注释保留，与 macd_refactor.py 一致）
         # if is_short and config.ENABLE_MA5_MA10 and row.get('vol_ma5') is not None and row.get('vol_ma10') is not None:
         #     if row.get('vol_ma5') < row.get('vol_ma10'):
@@ -1515,6 +1625,10 @@ class SignalCalculator:
             'price_change_count_f': config.PRICE_CHANGE_COUNT_F,
             'price_change_limit_g': config.PRICE_CHANGE_LIMIT_G,
             'price_change_count_g': config.PRICE_CHANGE_COUNT_G,
+            'price_change_mode': config.PRICE_CHANGE_MODE,
+            'price_change_func_window_min': config.PRICE_CHANGE_FUNC_WINDOW_MIN,
+            'price_change_func_window_max': config.PRICE_CHANGE_FUNC_WINDOW_MAX,
+            'price_change_func_steps': config.PRICE_CHANGE_FUNC_STEPS,
             'm_price_change': config.M_PRICE_CHANGE,
             'm_price_change_minutes': config.M_PRICE_CHANGE_MINUTES,
             'm_price_change_b': config.M_PRICE_CHANGE_B,
@@ -1540,6 +1654,11 @@ class SignalCalculator:
             'safe_range_window_hours_c': config.SAFE_RANGE_WINDOW_HOURS_C,
             'safe_range_swing_ratio_c': config.SAFE_RANGE_SWING_RATIO_C,
             'safe_range_near_ratio_c': config.SAFE_RANGE_NEAR_RATIO_C,
+
+            # ===== 整数关口过滤 =====
+            'round_level_step': config.ROUND_LEVEL_STEP,
+            'round_level_dev_ratio': config.ROUND_LEVEL_DEV_RATIO,
+            'round_level_single_side': config.ROUND_LEVEL_SINGLE_SIDE,
 
             # ===== 止盈止损 =====
             'stop_loss_points': config.STOP_LOSS_POINTS,

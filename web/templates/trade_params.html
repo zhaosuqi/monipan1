@@ -598,6 +598,34 @@
                 <label class="form-label small mb-0">C价格判断变化率</label>
                 <input name="price_change_limit_c" class="form-control form-control-sm" value="{{ defaults.price_change_limit_c }}" />
               </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">价格判断模式(group/func)</label>
+                <input name="price_change_mode" class="form-control form-control-sm" value="{{ defaults.get('price_change_mode', 'group') }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">函数模式最小窗口(分钟)</label>
+                <input name="price_change_func_window_min" class="form-control form-control-sm" value="{{ defaults.get('price_change_func_window_min', 5) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">函数模式最大窗口(分钟)</label>
+                <input name="price_change_func_window_max" class="form-control form-control-sm" value="{{ defaults.get('price_change_func_window_max', 20) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">函数模式切分次数</label>
+                <input name="price_change_func_steps" class="form-control form-control-sm" value="{{ defaults.get('price_change_func_steps', 10) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">整数关口固定间隔</label>
+                <input name="round_level_step" class="form-control form-control-sm" value="{{ defaults.get('round_level_step', 10000) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">整数关口偏差比例(0=关闭)</label>
+                <input name="round_level_dev_ratio" class="form-control form-control-sm" value="{{ defaults.get('round_level_dev_ratio', 0.0) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">整数关口单边受限(true/false)</label>
+                <input name="round_level_single_side" class="form-control form-control-sm" value="{{ defaults.get('round_level_single_side', True) }}" />
+              </div>
                <!-- <div class="col-md-4">
                 <label class="form-label small mb-0">开仓: 4H整点+()分钟不开仓</label>
                 <input name="mask_4h" class="form-control form-control-sm" value="{{ defaults.mask_4h }}" />
