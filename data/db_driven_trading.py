@@ -65,7 +65,7 @@ logger = get_logger('data.db_driven_trading')
 # 监控间隔（秒）
 POLL_INTERVAL = 1.0
 # 预加载数据条数
-PRELOAD_COUNT = 1000
+PRELOAD_COUNT = 3000
 # 余额同步间隔（秒）
 BALANCE_SYNC_INTERVAL = 60
 
@@ -93,7 +93,7 @@ class DBDrivenTrader:
         
         # 价格历史（用于信号计算）
         self.price_history: List[float] = []
-        self.max_price_history = 100
+        self.max_price_history = 3000
         
         # 前一行数据（用于信号计算）
         self.prev_row: Optional[Dict] = None
