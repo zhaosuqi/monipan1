@@ -24,6 +24,7 @@ from core.config import config
 from signal_module.signal_calculator import (
     SignalCalculator,
     _build_func_price_change_checks,
+    _build_linear_safe_range_checks,
     _find_safe_range_anchor,
     _pass_safe_range,
     price_change_limit,
@@ -66,6 +67,10 @@ def _permissive_config(monkeypatch):
         monkeypatch.setattr(config, f"SAFE_RANGE_WINDOW_HOURS{suffix}", 0.0)
         monkeypatch.setattr(config, f"SAFE_RANGE_SWING_RATIO{suffix}", 0.0)
         monkeypatch.setattr(config, f"SAFE_RANGE_NEAR_RATIO{suffix}", 0.0)
+    monkeypatch.setattr(config, "SAFE_RANGE_MODE", "group")
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_HOURS", 100)
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_A", 1800.0)
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_B", 36000.0)
 
 
 def _make_calc():
@@ -161,6 +166,89 @@ def test_safe_range_blocks_short_near_anchor(monkeypatch):
     history = [{"close": c} for c in [90, 110, 80, 105]]
     # 当前价 80.05 在锚点 80 的 ±0.1% 内 → 放弃追空（B组也生效）
     assert _pass_safe_range(history, _row(80.05, 81, 79), "空头") is False
+
+
+# ==================== 线性安全范围 ====================
+
+def _set_linear_safe_range(monkeypatch, a=1800.0, b=36000.0):
+    monkeypatch.setattr(config, "SAFE_RANGE_MODE", "linear")
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_A", a)
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_B", b)
+
+
+def test_linear_safe_range_checks_100_windows(monkeypatch):
+    _permissive_config(monkeypatch)
+    checks = _build_linear_safe_range_checks()
+
+    assert len(checks) == 100
+    assert [item[0] for item in checks[:3]] == ["L1", "L2", "L3"]
+    assert [item[1] for item in checks] == pytest.approx([float(k) for k in range(1, 101)])
+    assert checks[0][2:] == pytest.approx((1 / 1800, 1 / 36000))
+    assert checks[-1][2:] == pytest.approx((100 / 1800, 100 / 36000))
+
+
+def test_linear_safe_range_checks_respect_max_hours(monkeypatch):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, "SAFE_RANGE_LINEAR_HOURS", 12)
+
+    checks = _build_linear_safe_range_checks()
+
+    assert len(checks) == 12
+    assert [item[0] for item in checks] == [f"L{k}" for k in range(1, 13)]
+    assert checks[-1][2:] == pytest.approx((12 / 1800, 12 / 36000))
+
+
+@pytest.mark.parametrize("attr", [
+    "SAFE_RANGE_LINEAR_A",
+    "SAFE_RANGE_LINEAR_B",
+    "SAFE_RANGE_LINEAR_HOURS",
+])
+def test_linear_safe_range_invalid_params_return_empty(monkeypatch, attr):
+    _permissive_config(monkeypatch)
+    monkeypatch.setattr(config, attr, 0)
+    assert _build_linear_safe_range_checks() == []
+
+
+def test_linear_safe_range_blocks_long_when_one_step_hits(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_linear_safe_range(monkeypatch)
+    history = [{"close": c} for c in [96000, 100300, 99900, 99500, 98900, 97500]]
+
+    # 第18档定位锚点100300，当前价100350进入该档锚定范围
+    assert _pass_safe_range(history, _row(100350, 100351, 100349), "多头") is False
+
+
+def test_linear_safe_range_all_steps_pass_allows_long(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_linear_safe_range(monkeypatch)
+    history = [{"close": c} for c in [96000, 100300, 99900, 99500, 98900, 97500]]
+
+    assert _pass_safe_range(history, _row(100000, 100001, 99999), "多头") is True
+
+
+def test_linear_safe_range_blocks_short(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_linear_safe_range(monkeypatch)
+    history = [{"close": c} for c in [103500, 99700, 100100, 100400, 101100, 102500]]
+
+    assert _pass_safe_range(history, _row(99750, 99751, 99749), "空头") is False
+
+
+def test_linear_safe_range_invalid_params_disable_filter(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_linear_safe_range(monkeypatch, a=0)
+    history = [{"close": c} for c in [96000, 100300, 99900, 99500, 98900, 97500]]
+
+    assert _pass_safe_range(history, _row(100350, 100351, 100349), "多头") is True
+
+
+def test_group_safe_range_ignores_linear_params(monkeypatch):
+    _permissive_config(monkeypatch)
+    _set_linear_safe_range(monkeypatch)
+    monkeypatch.setattr(config, "SAFE_RANGE_MODE", "group")
+    history = [{"close": c} for c in [96000, 100300, 99900, 99500, 98900, 97500]]
+
+    assert _pass_safe_range(history, _row(100350, 100351, 100349), "多头") is True
 
 
 # ==================== M_PRICE_CHANGE 新判定逻辑 ====================
@@ -490,6 +578,8 @@ def test_get_signal_params_exports_new_keys():
         "safe_range_window_hours", "safe_range_swing_ratio", "safe_range_near_ratio",
         "safe_range_window_hours_b", "safe_range_swing_ratio_b", "safe_range_near_ratio_b",
         "safe_range_window_hours_c", "safe_range_swing_ratio_c", "safe_range_near_ratio_c",
+        "safe_range_mode", "safe_range_linear_hours",
+        "safe_range_linear_a", "safe_range_linear_b",
         "price_change_mode", "price_change_func_window_min",
         "price_change_func_window_max", "price_change_func_steps",
         "round_level_step", "round_level_dev_ratio", "round_level_single_side",
@@ -504,6 +594,10 @@ def test_trade_params_template_contains_new_filter_inputs():
         "price_change_func_window_min",
         "price_change_func_window_max",
         "price_change_func_steps",
+        "safe_range_mode",
+        "safe_range_linear_hours",
+        "safe_range_linear_a",
+        "safe_range_linear_b",
         "round_level_step",
         "round_level_dev_ratio",
         "round_level_single_side",

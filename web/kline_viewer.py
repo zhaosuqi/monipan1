@@ -933,6 +933,12 @@ def api_config():
                 '分钟价格变化E': p.get('m_price_change_e', 0.9999),
                 '分钟数E': p.get('m_price_change_minutes_e', 60),
             },
+            '安全范围过滤': {
+                '安全范围模式': p.get('safe_range_mode', 'group'),
+                '线性最大回溯小时': p.get('safe_range_linear_hours', 100),
+                '线性摆动幅度除数A': p.get('safe_range_linear_a', 1800),
+                '线性锚定范围除数B': p.get('safe_range_linear_b', 36000),
+            },
             '整数关口过滤': {
                 '固定关口间隔': p.get('round_level_step', 10000),
                 '关口偏差比例': p.get('round_level_dev_ratio', 0.0),

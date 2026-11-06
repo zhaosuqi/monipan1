@@ -615,6 +615,22 @@
                 <input name="price_change_func_steps" class="form-control form-control-sm" value="{{ defaults.get('price_change_func_steps', 10) }}" />
               </div>
               <div class="col-md-6">
+                <label class="form-label small mb-0">安全范围模式(group/linear)</label>
+                <input name="safe_range_mode" class="form-control form-control-sm" value="{{ defaults.get('safe_range_mode', 'group') }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">线性安全范围最大回溯小时</label>
+                <input name="safe_range_linear_hours" class="form-control form-control-sm" value="{{ defaults.get('safe_range_linear_hours', 100) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">线性摆动幅度除数A(swing=k/A)</label>
+                <input name="safe_range_linear_a" class="form-control form-control-sm" value="{{ defaults.get('safe_range_linear_a', 1800) }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small mb-0">线性锚定范围除数B(near=k/B)</label>
+                <input name="safe_range_linear_b" class="form-control form-control-sm" value="{{ defaults.get('safe_range_linear_b', 36000) }}" />
+              </div>
+              <div class="col-md-6">
                 <label class="form-label small mb-0">整数关口固定间隔</label>
                 <input name="round_level_step" class="form-control form-control-sm" value="{{ defaults.get('round_level_step', 10000) }}" />
               </div>

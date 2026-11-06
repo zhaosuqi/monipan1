@@ -275,6 +275,12 @@ class Config:
         self.SAFE_RANGE_SWING_RATIO_C = float(os.getenv('SAFE_RANGE_SWING_RATIO_C', '0'))    # C组：摆动幅度
         self.SAFE_RANGE_NEAR_RATIO_C = float(os.getenv('SAFE_RANGE_NEAR_RATIO_C', '0'))      # C组：锚定点附近范围
 
+        # 安全范围模式：group=A/B/C固定组；linear=按小时线性切分，全部档位通过才放行
+        self.SAFE_RANGE_MODE = os.getenv('SAFE_RANGE_MODE', 'group')
+        self.SAFE_RANGE_LINEAR_HOURS = int(os.getenv('SAFE_RANGE_LINEAR_HOURS', '100'))
+        self.SAFE_RANGE_LINEAR_A = float(os.getenv('SAFE_RANGE_LINEAR_A', '1800'))
+        self.SAFE_RANGE_LINEAR_B = float(os.getenv('SAFE_RANGE_LINEAR_B', '36000'))
+
         # 整数关口过滤
         self.ROUND_LEVEL_STEP = int(os.getenv('ROUND_LEVEL_STEP', '10000'))
         self.ROUND_LEVEL_DEV_RATIO = float(os.getenv('ROUND_LEVEL_DEV_RATIO', '0'))

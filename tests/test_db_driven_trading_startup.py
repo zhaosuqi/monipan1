@@ -39,7 +39,7 @@ def test_parse_args_keeps_existing_defaults():
     args = db_driven_trading.parse_args([])
 
     assert args.live is False
-    assert args.preload == 1000
+    assert args.preload == 6000
     assert args.silent_startup is False
 
 

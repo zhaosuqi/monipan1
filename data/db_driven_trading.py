@@ -65,7 +65,7 @@ logger = get_logger('data.db_driven_trading')
 # 监控间隔（秒）
 POLL_INTERVAL = 1.0
 # 预加载数据条数
-PRELOAD_COUNT = 3000
+PRELOAD_COUNT = 6000
 # 余额同步间隔（秒）
 BALANCE_SYNC_INTERVAL = 60
 
@@ -522,8 +522,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--preload",
         type=int,
-        default=1000,
-        help="预加载数据条数（默认1000）"
+        default=6000,
+        help="预加载数据条数（默认6000）"
     )
     parser.add_argument(
         "--silent-startup",

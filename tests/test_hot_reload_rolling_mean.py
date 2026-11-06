@@ -73,6 +73,10 @@ def test_hot_reload_updates_new_entry_filter_params(monkeypatch):
         "round_level_step": 5000,
         "round_level_dev_ratio": 0.004,
         "round_level_single_side": False,
+        "safe_range_mode": "linear",
+        "safe_range_linear_hours": 80,
+        "safe_range_linear_a": 1600.0,
+        "safe_range_linear_b": 32000.0,
     }
     for key in updates:
         attr_name = key.upper()

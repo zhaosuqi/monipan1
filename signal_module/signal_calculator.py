@@ -74,17 +74,42 @@ def _find_safe_range_anchor(window_closes, s, swing_ratio, side):
     return SafeRangeAnchor(anchor=anchor, leg_price=leg_price, swing_price=anchor)
 
 
-def _pass_safe_range(history_rows: List[Dict], row: Dict, side_text: str) -> bool:
-    """安全范围检查（对齐 V5.0）：价格从前期锚点M摆动≥swing后又弹回M±near内时放弃开仓。
+def _build_linear_safe_range_checks():
+    """线性模式：从1小时到最大小时数逐档生成安全范围检查。"""
+    def _f(name, default=0.0):
+        try:
+            return float(getattr(config, name, default))
+        except Exception:
+            return 0.0
 
-    共 A/B/C 三组，同判断逻辑；每组内任一参数<=0该组关闭；所有启用的组都通过才放行。
+    a = _f("SAFE_RANGE_LINEAR_A")
+    b = _f("SAFE_RANGE_LINEAR_B")
+    max_hours = _f("SAFE_RANGE_LINEAR_HOURS", 100.0)
+    if not np.isfinite(a) or not np.isfinite(b) or not np.isfinite(max_hours) or a <= 0 or b <= 0 or max_hours < 1:
+        return []
+
+    checks = []
+    for k in range(1, int(max_hours) + 1):
+        w = float(k)
+        checks.append((f"L{k}", w, w / a, w / b))
+    return checks
+
+
+def _pass_safe_range(history_rows: List[Dict], row: Dict, side_text: str) -> bool:
+    """安全范围检查：固定组或线性档位全部通过才放行。
+
+    固定组中任一参数<=0该组关闭；线性参数非法时线性模式关闭。
     history_rows 不含当前K线，与 V5.0 的 alldf['close'].iloc[i-bars:i] 对应。
     """
-    checks = [
-        ("A", getattr(config, "SAFE_RANGE_WINDOW_HOURS", 0), getattr(config, "SAFE_RANGE_SWING_RATIO", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO", 0)),
-        ("B", getattr(config, "SAFE_RANGE_WINDOW_HOURS_B", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_B", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_B", 0)),
-        ("C", getattr(config, "SAFE_RANGE_WINDOW_HOURS_C", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_C", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_C", 0)),
-    ]
+    _sr_mode = str(getattr(config, "SAFE_RANGE_MODE", "group")).strip().lower()
+    if _sr_mode == "linear":
+        checks = _build_linear_safe_range_checks()
+    else:
+        checks = [
+            ("A", getattr(config, "SAFE_RANGE_WINDOW_HOURS", 0), getattr(config, "SAFE_RANGE_SWING_RATIO", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO", 0)),
+            ("B", getattr(config, "SAFE_RANGE_WINDOW_HOURS_B", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_B", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_B", 0)),
+            ("C", getattr(config, "SAFE_RANGE_WINDOW_HOURS_C", 0), getattr(config, "SAFE_RANGE_SWING_RATIO_C", 0), getattr(config, "SAFE_RANGE_NEAR_RATIO_C", 0)),
+        ]
     for group_name, raw_hours, raw_swing, raw_near in checks:
         try:
             window_hours = float(raw_hours)
@@ -1654,6 +1679,10 @@ class SignalCalculator:
             'safe_range_window_hours_c': config.SAFE_RANGE_WINDOW_HOURS_C,
             'safe_range_swing_ratio_c': config.SAFE_RANGE_SWING_RATIO_C,
             'safe_range_near_ratio_c': config.SAFE_RANGE_NEAR_RATIO_C,
+            'safe_range_mode': config.SAFE_RANGE_MODE,
+            'safe_range_linear_hours': config.SAFE_RANGE_LINEAR_HOURS,
+            'safe_range_linear_a': config.SAFE_RANGE_LINEAR_A,
+            'safe_range_linear_b': config.SAFE_RANGE_LINEAR_B,
 
             # ===== 整数关口过滤 =====
             'round_level_step': config.ROUND_LEVEL_STEP,
